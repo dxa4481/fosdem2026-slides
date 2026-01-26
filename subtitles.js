@@ -4,6 +4,27 @@
  * Supports two modes:
  * 1. Web Speech API (default) - Better quality, requires internet
  * 2. Whisper via transformers.js (offline mode) - Works offline, slower
+ * 
+ * OFFLINE MODE SETUP:
+ * ===================
+ * For Whisper offline mode to work, you must pre-download the model files:
+ * 
+ * 1. Create directory: models/Xenova/whisper-tiny.en/
+ * 2. Download files from: https://huggingface.co/Xenova/whisper-tiny.en/tree/main
+ *    Required files:
+ *    - config.json
+ *    - tokenizer.json  
+ *    - tokenizer_config.json
+ *    - preprocessor_config.json
+ *    - generation_config.json
+ *    - onnx/decoder_model_merged_quantized.onnx (or similar model file)
+ *    - onnx/encoder_model_quantized.onnx
+ * 
+ * 3. Enable "Offline Mode" toggle in the UI
+ * 
+ * LOCAL RESOURCES USED:
+ * - ONNX WASM runtime: lib/transformers/ort-wasm-simd*.wasm
+ * - Transformers.js library: lib/transformers/transformers.min.js
  */
 
 (function() {
@@ -50,6 +71,10 @@ const SubtitleState = {
 
 const CONFIG = {
   // Whisper settings
+  // For offline mode, this model must be pre-downloaded to: models/Xenova/whisper-tiny.en/
+  // Download from: https://huggingface.co/Xenova/whisper-tiny.en/tree/main
+  // Required files: config.json, tokenizer.json, tokenizer_config.json, 
+  //                 preprocessor_config.json, generation_config.json, and model files (*.onnx)
   modelName: 'Xenova/whisper-tiny.en',
   windowSeconds: 5,
   processIntervalMs: 2000,
@@ -170,8 +195,21 @@ function stopWebSpeech() {
 
 async function loadTransformers() {
   const module = await import('./lib/transformers/transformers.min.js');
+  
+  // Configure for local/offline operation
+  // WASM files are loaded from local lib/transformers/ folder
   module.env.backends.onnx.wasm.wasmPaths = './lib/transformers/';
-  module.env.allowLocalModels = false;
+  
+  // Enable local model loading from models/ folder
+  // To use offline: download model files from HuggingFace and place in models/Xenova/whisper-tiny.en/
+  module.env.allowLocalModels = true;
+  module.env.localModelPath = './models/';
+  
+  // Disable remote model fetching for true offline operation
+  // NOTE: If models are not pre-downloaded locally, this will cause loading to fail
+  // For first-time setup with internet, temporarily set to true to download models
+  module.env.allowRemoteModels = false;
+  
   return module;
 }
 
