@@ -62,7 +62,24 @@ const CONFIG = {
 };
 
 // Base font size in vw units (at 100% scale)
+// In windowed mode, 3vw on a 1200px viewport = ~36px
+// In fullscreen, we need to scale down to maintain similar visual size
 const BASE_FONT_SIZE_VW = 3;
+
+// Reference viewport width for consistent sizing
+// This represents a "typical" windowed browser width
+const REFERENCE_VIEWPORT_WIDTH = 1200;
+
+// Maximum font size in pixels to prevent enormous text in fullscreen
+const MAX_FONT_SIZE_PX = 48;
+
+// Fullscreen detection helper
+function isFullscreenActive() {
+  return !!(document.fullscreenElement || 
+            document.webkitFullscreenElement || 
+            document.mozFullScreenElement || 
+            document.msFullscreenElement);
+}
 
 // ============================================================================
 // WEB SPEECH API IMPLEMENTATION
@@ -398,9 +415,8 @@ function displaySubtitleWithHighlight(text, isInterim) {
   
   if (!overlay || !container || !text.trim()) return;
   
-  // Apply current font size
-  const fontSizeVw = (BASE_FONT_SIZE_VW * SubtitleState.sizePercent) / 100;
-  container.style.fontSize = fontSizeVw + 'vw';
+  // Apply current font size (fullscreen-aware)
+  applySubtitleFontSize(container);
   
   const words = text.split(' ').filter(w => w.length > 0);
   const maxWords = CONFIG.maxWordsPerLine * 2;
@@ -429,9 +445,8 @@ function displaySubtitle(text) {
   
   if (!overlay || !container || !text.trim()) return;
   
-  // Apply current font size
-  const fontSizeVw = (BASE_FONT_SIZE_VW * SubtitleState.sizePercent) / 100;
-  container.style.fontSize = fontSizeVw + 'vw';
+  // Apply current font size (fullscreen-aware)
+  applySubtitleFontSize(container);
   
   const words = text.split(' ').filter(w => w.length > 0);
   const maxWords = CONFIG.maxWordsPerLine * 2;
@@ -533,21 +548,62 @@ function setOfflineMode(offline) {
 // SUBTITLE SIZE CONFIGURATION
 // ============================================================================
 
+/**
+ * Calculate the appropriate font size for subtitles.
+ * In fullscreen mode, we scale based on a reference viewport width to prevent
+ * subtitles from becoming enormous when the viewport expands to full screen.
+ */
+function calculateSubtitleFontSize() {
+  const sizePercent = SubtitleState.sizePercent;
+  const baseFontSizeVw = (BASE_FONT_SIZE_VW * sizePercent) / 100;
+  
+  // Get current viewport width
+  const viewportWidth = window.innerWidth;
+  
+  // Calculate what the font size would be in pixels
+  const fontSizePx = (baseFontSizeVw / 100) * viewportWidth;
+  
+  // In fullscreen mode (or any large viewport), cap the font size
+  // to maintain consistency with windowed viewing
+  if (isFullscreenActive() || viewportWidth > REFERENCE_VIEWPORT_WIDTH) {
+    // Calculate what the size would be at the reference viewport width
+    const referenceFontSizePx = (baseFontSizeVw / 100) * REFERENCE_VIEWPORT_WIDTH;
+    
+    // Use the smaller of the calculated size or the reference-based size
+    // with a small allowance for larger screens (10% larger than reference)
+    const maxAllowedPx = Math.min(referenceFontSizePx * 1.1, MAX_FONT_SIZE_PX);
+    
+    if (fontSizePx > maxAllowedPx) {
+      // Return as pixel value instead of vw
+      return { value: maxAllowedPx, unit: 'px' };
+    }
+  }
+  
+  // For normal windowed mode, use vw for responsive scaling
+  return { value: baseFontSizeVw, unit: 'vw' };
+}
+
+/**
+ * Apply the calculated font size to the subtitle container
+ */
+function applySubtitleFontSize(container) {
+  if (!container) return;
+  
+  const fontSize = calculateSubtitleFontSize();
+  container.style.fontSize = fontSize.value + fontSize.unit;
+}
+
 function setSubtitleSize(sizePercent) {
   // Clamp value between 50 and 150
   const size = Math.max(50, Math.min(150, parseInt(sizePercent, 10) || 100));
   SubtitleState.sizePercent = size;
   
-  // Calculate the actual font size
-  const fontSizeVw = (BASE_FONT_SIZE_VW * size) / 100;
-  
   // Apply to the subtitle text element
   const container = document.getElementById('subtitle-text');
-  if (container) {
-    container.style.fontSize = fontSizeVw + 'vw';
-  }
+  applySubtitleFontSize(container);
   
-  console.log(`[Subtitles] Size set to ${size}% (${fontSizeVw}vw)`);
+  const fontSize = calculateSubtitleFontSize();
+  console.log(`[Subtitles] Size set to ${size}% (${fontSize.value}${fontSize.unit})`);
 }
 
 function getSubtitleSize() {
@@ -557,6 +613,19 @@ function getSubtitleSize() {
 // ============================================================================
 // INITIALIZATION
 // ============================================================================
+
+/**
+ * Handle fullscreen change events to re-apply subtitle sizing
+ */
+function onFullscreenChangeSubtitles() {
+  // Re-apply font size when fullscreen state changes
+  const container = document.getElementById('subtitle-text');
+  if (container && SubtitleState.isListening) {
+    applySubtitleFontSize(container);
+    const fontSize = calculateSubtitleFontSize();
+    console.log(`[Subtitles] Fullscreen changed, font size: ${fontSize.value}${fontSize.unit}`);
+  }
+}
 
 function initSubtitles() {
   // Main subtitles toggle
@@ -570,6 +639,12 @@ function initSubtitles() {
   if (offlineToggle) {
     offlineToggle.addEventListener('change', (e) => setOfflineMode(e.target.checked));
   }
+  
+  // Listen for fullscreen changes to adjust subtitle size
+  document.addEventListener('fullscreenchange', onFullscreenChangeSubtitles);
+  document.addEventListener('webkitfullscreenchange', onFullscreenChangeSubtitles);
+  document.addEventListener('mozfullscreenchange', onFullscreenChangeSubtitles);
+  document.addEventListener('msfullscreenchange', onFullscreenChangeSubtitles);
   
   // Expose API for app.js
   window.subtitleSystem = {
