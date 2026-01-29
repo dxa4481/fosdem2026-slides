@@ -23,8 +23,10 @@
     {
       "type": "video",
       "src": "media/video/4.m4v",
-      "notes": "There's actually another, lesser known problem with left pad... in 2016, it didn't have a license. So everyone using it, didn't have legal permission to do so",
-      "loop": false
+      "notes": "There's actually another, lesser known problem with left pad... in 2016, it didn't have a license. So everyone distributing it, didn't have legal permission to do so",
+      "loop": false,
+      "volume": 100,
+      "autoAdvance": false
     },
     {
       "type": "video",
