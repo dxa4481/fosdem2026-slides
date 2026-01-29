@@ -694,7 +694,7 @@
     },
     {
       "type": "video",
-      "notes": "Dylan: But we just had a proof of concept, you wired it up to stripe? Who's bank account does this go to?\n\nMike: Dylan, why did you think we were doing all this?\n\nDylan: I... I guess I'm in disbelief.. Wait, but Mike, the one thing I still don't get is you've spent your whole life as an advocate for open source. You gave up good jobs in the tech sector to work on this stuff, getting paid crumbs to do research and work in humanitarian orgs. Now you're just going to kill it?\n",
+      "notes": "Mike: Dylan, why did you think we were doing all this?\n\nDylan: I... I guess I'm in disbelief.. Wait, but Mike, the one thing I still don't get is you've spent your whole life as an advocate for open source. You gave up good jobs in the tech sector to work on this stuff, getting paid crumbs to do research and work in humanitarian orgs. Now you're just going to kill it?\n",
       "src": "media/video/malus-demo3.webm",
       "loop": false,
       "volume": 100,
@@ -887,8 +887,8 @@
     },
     {
       "src": "media/audio/frenchEnd.mp3",
-      "startSlide": 101,
-      "endSlide": 105,
+      "startSlide": 103,
+      "endSlide": 107,
       "loop": false,
       "volume": 43,
       "pauseSlides": [],
@@ -910,7 +910,7 @@
     {
       "src": "media/audio/thePitch.mp3",
       "startSlide": 94,
-      "endSlide": 97,
+      "endSlide": 99,
       "loop": true,
       "volume": 10,
       "pauseSlides": [],
@@ -920,8 +920,8 @@
     },
     {
       "src": "media/audio/theEndasweknowit.mp3",
-      "startSlide": 106,
-      "endSlide": 109,
+      "startSlide": 108,
+      "endSlide": 111,
       "loop": false,
       "volume": 100,
       "pauseSlides": [],
