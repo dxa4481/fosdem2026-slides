@@ -27,7 +27,7 @@ if (isPresenter) {
       display: flex;
       align-items: center;
       gap: 12px;
-      padding: 12px 16px;
+      padding: 10px 16px;
       background: linear-gradient(135deg, #16213e 0%, #1a1a2e 100%);
       border-bottom: 1px solid rgba(255,255,255,0.1);
       flex-shrink: 0;
@@ -161,156 +161,213 @@ if (isPresenter) {
       background: rgba(74, 222, 128, 0.2);
     }
     
+    /* Font size control in header */
+    .font-size-control {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 12px;
+      background: rgba(255,255,255,0.05);
+      border-radius: 6px;
+    }
+    
+    .font-size-control label {
+      font-size: 0.75rem;
+      color: rgba(255,255,255,0.6);
+      white-space: nowrap;
+    }
+    
+    .font-size-control input[type="range"] {
+      width: 80px;
+      height: 4px;
+      -webkit-appearance: none;
+      appearance: none;
+      background: rgba(255,255,255,0.2);
+      border-radius: 2px;
+      cursor: pointer;
+    }
+    
+    .font-size-control input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 14px;
+      height: 14px;
+      background: #e94560;
+      border-radius: 50%;
+      cursor: pointer;
+      transition: transform 0.1s;
+    }
+    
+    .font-size-control input[type="range"]::-webkit-slider-thumb:hover {
+      transform: scale(1.15);
+    }
+    
+    .font-size-control span {
+      font-size: 0.75rem;
+      color: rgba(255,255,255,0.8);
+      min-width: 32px;
+      text-align: right;
+    }
+    
+    /* Main layout: top-heavy for notes, bottom for previews */
     #presenter-main {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 16px;
-      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      padding: 12px;
+      gap: 12px;
       flex: 1;
       overflow: hidden;
       min-height: 0;
     }
     
-    .slide-panel {
+    /* Top section: Current slide notes - takes most of the space */
+    #current-notes-section {
+      flex: 1;
+      min-height: 0;
       display: flex;
       flex-direction: column;
       background: rgba(0,0,0,0.3);
       border-radius: 12px;
-      overflow: hidden;
-      min-height: 0;
-    }
-    
-    .slide-panel.current {
       border: 2px solid #e94560;
+      overflow: hidden;
     }
     
-    .slide-panel.next {
-      border: 2px solid rgba(255,255,255,0.1);
-      opacity: 0.85;
-    }
-    
-    .panel-header {
+    #current-notes-section .section-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 10px 14px;
+      padding: 10px 16px;
+      background: rgba(233, 69, 96, 0.15);
+      border-bottom: 1px solid rgba(233, 69, 96, 0.3);
+      flex-shrink: 0;
+    }
+    
+    #current-notes-section .section-header h3 {
+      margin: 0;
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #e94560;
+    }
+    
+    #current-notes-section .slide-number {
+      font-size: 0.8rem;
+      background: rgba(233, 69, 96, 0.2);
+      padding: 4px 12px;
+      border-radius: 12px;
+      color: #e94560;
+      font-weight: 600;
+    }
+    
+    #current-notes-section .notes-content {
+      flex: 1;
+      padding: 20px 24px;
+      overflow-y: auto;
+      min-height: 0;
+    }
+    
+    #current-notes-section .notes-text {
+      font-size: 1.4rem;
+      line-height: 1.7;
+      color: rgba(255,255,255,0.95);
+      white-space: pre-wrap;
+    }
+    
+    #current-notes-section .notes-text:empty::after {
+      content: 'No speaker notes for this slide';
+      color: rgba(255,255,255,0.3);
+      font-style: italic;
+    }
+    
+    /* Bottom section: Previews and next slide info */
+    #bottom-section {
+      flex-shrink: 0;
+      height: 180px;
+      display: flex;
+      gap: 12px;
+    }
+    
+    /* Current slide preview - compact */
+    #current-preview-panel {
+      width: 280px;
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      background: rgba(0,0,0,0.3);
+      border-radius: 10px;
+      border: 2px solid rgba(233, 69, 96, 0.4);
+      overflow: hidden;
+    }
+    
+    #current-preview-panel .preview-header {
+      padding: 6px 12px;
       background: rgba(0,0,0,0.3);
       border-bottom: 1px solid rgba(255,255,255,0.1);
       flex-shrink: 0;
     }
     
-    .panel-header h3 {
+    #current-preview-panel .preview-header h4 {
       margin: 0;
-      font-size: 0.8rem;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: rgba(255,255,255,0.6);
-    }
-    
-    .slide-panel.current .panel-header h3 {
-      color: #e94560;
-    }
-    
-    .slide-number {
-      font-size: 0.75rem;
-      background: rgba(255,255,255,0.1);
-      padding: 3px 10px;
-      border-radius: 10px;
-      color: rgba(255,255,255,0.7);
-    }
-    
-    .slide-panel.current .slide-number {
-      background: rgba(233, 69, 96, 0.2);
-      color: #e94560;
-    }
-    
-    /* Notes section - prominent, at the top, takes more space */
-    .notes-section {
-      flex: 1;
-      padding: 16px 18px;
-      background: rgba(0,0,0,0.15);
-      border-bottom: 1px solid rgba(255,255,255,0.05);
-      overflow-y: auto;
-      min-height: 0;
-    }
-    
-    .notes-label {
       font-size: 0.7rem;
       text-transform: uppercase;
       letter-spacing: 0.5px;
-      color: rgba(255,255,255,0.4);
-      margin-bottom: 8px;
+      color: rgba(233, 69, 96, 0.8);
     }
     
-    .notes-text {
-      font-size: 1.1rem;
-      line-height: 1.6;
-      color: rgba(255,255,255,0.95);
-    }
-    
-    .notes-text:empty::after {
-      content: 'No speaker notes';
-      color: rgba(255,255,255,0.3);
-      font-style: italic;
-    }
-    
-    /* Preview container - smaller, at the bottom */
-    .preview-container {
-      flex-shrink: 0;
-      height: 35%;
-      min-height: 120px;
-      max-height: 250px;
+    #current-preview-panel .preview-container {
+      flex: 1;
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 10px;
+      padding: 8px;
       background: #000;
       overflow: hidden;
+      min-height: 0;
     }
     
-    .preview-container img,
-    .preview-container video {
+    #current-preview-panel .preview-container img,
+    #current-preview-panel .preview-container video {
       max-width: 100%;
       max-height: 100%;
       object-fit: contain;
       border-radius: 4px;
     }
     
-    .preview-container .placeholder-preview {
+    #current-preview-panel .preview-container .placeholder-preview {
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
       text-align: center;
-      padding: 15px;
+      padding: 10px;
       width: 100%;
       height: 100%;
-      border-radius: 8px;
+      border-radius: 6px;
     }
     
-    .preview-container .placeholder-preview h3 {
-      margin: 0 0 6px 0;
-      font-size: 1rem;
+    #current-preview-panel .preview-container .placeholder-preview h3 {
+      margin: 0 0 4px 0;
+      font-size: 0.85rem;
     }
     
-    .preview-container .placeholder-preview p {
+    #current-preview-panel .preview-container .placeholder-preview p {
       margin: 0;
       opacity: 0.7;
-      font-size: 0.85rem;
+      font-size: 0.7rem;
     }
     
     #video-seek-container {
       display: none;
-      padding: 6px 14px 10px;
+      padding: 4px 10px 6px;
       background: rgba(0,0,0,0.2);
       border-top: 1px solid rgba(255,255,255,0.05);
       flex-shrink: 0;
     }
     
     .seek-label {
-      font-size: 0.7rem;
+      font-size: 0.65rem;
       color: rgba(255,255,255,0.4);
-      margin-bottom: 6px;
+      margin-bottom: 4px;
       display: flex;
       align-items: center;
       gap: 6px;
@@ -322,36 +379,159 @@ if (isPresenter) {
     
     #seekSlider {
       width: 100%;
-      height: 6px;
+      height: 4px;
       -webkit-appearance: none;
       appearance: none;
       background: rgba(255,255,255,0.1);
-      border-radius: 3px;
+      border-radius: 2px;
       cursor: pointer;
     }
     
     #seekSlider::-webkit-slider-thumb {
       -webkit-appearance: none;
       appearance: none;
-      width: 14px;
-      height: 14px;
+      width: 12px;
+      height: 12px;
       background: #e94560;
       border-radius: 50%;
       cursor: pointer;
+    }
+    
+    /* Next slide panel - compact horizontal layout */
+    #next-slide-panel {
+      flex: 1;
+      display: flex;
+      background: rgba(0,0,0,0.25);
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.1);
+      overflow: hidden;
+      min-width: 0;
+    }
+    
+    #next-slide-panel .next-preview {
+      width: 200px;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px;
+      background: #000;
+      border-right: 1px solid rgba(255,255,255,0.1);
+    }
+    
+    #next-slide-panel .next-preview img,
+    #next-slide-panel .next-preview video {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      border-radius: 4px;
+    }
+    
+    #next-slide-panel .next-preview .placeholder-preview {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 10px;
+      width: 100%;
+      height: 100%;
+      border-radius: 6px;
+    }
+    
+    #next-slide-panel .next-preview .placeholder-preview h3 {
+      margin: 0 0 4px 0;
+      font-size: 0.75rem;
+    }
+    
+    #next-slide-panel .next-preview .placeholder-preview p {
+      margin: 0;
+      opacity: 0.7;
+      font-size: 0.65rem;
+    }
+    
+    #next-slide-panel .next-info {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      overflow: hidden;
+    }
+    
+    #next-slide-panel .next-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      background: rgba(0,0,0,0.3);
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+      flex-shrink: 0;
+    }
+    
+    #next-slide-panel .next-header h4 {
+      margin: 0;
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: rgba(255,255,255,0.5);
+    }
+    
+    #next-slide-panel .next-header .slide-number {
+      font-size: 0.7rem;
+      background: rgba(255,255,255,0.1);
+      padding: 2px 8px;
+      border-radius: 8px;
+      color: rgba(255,255,255,0.6);
+    }
+    
+    #next-slide-panel .next-notes {
+      flex: 1;
+      padding: 10px 12px;
+      overflow-y: auto;
+      min-height: 0;
+    }
+    
+    #next-slide-panel .next-notes .notes-text {
+      font-size: 0.8rem;
+      line-height: 1.5;
+      color: rgba(255,255,255,0.7);
+      white-space: pre-wrap;
+    }
+    
+    #next-slide-panel .next-notes .notes-text:empty::after {
+      content: 'No speaker notes';
+      color: rgba(255,255,255,0.3);
+      font-style: italic;
+      font-size: 0.75rem;
     }
     
     .end-message {
       color: rgba(255,255,255,0.4);
       font-style: italic;
       text-align: center;
-      padding: 30px 20px;
+      padding: 20px;
+      font-size: 0.85rem;
     }
     
     /* Responsive for smaller windows */
-    @media (max-width: 700px) {
-      #presenter-main {
-        grid-template-columns: 1fr;
-        grid-template-rows: 1fr 1fr;
+    @media (max-width: 800px) {
+      #bottom-section {
+        flex-direction: column;
+        height: auto;
+        min-height: 250px;
+      }
+      
+      #current-preview-panel {
+        width: 100%;
+        height: 120px;
+      }
+      
+      #next-slide-panel {
+        height: 130px;
+      }
+      
+      #next-slide-panel .next-preview {
+        width: 150px;
       }
     }
   `;
@@ -366,6 +546,12 @@ if (isPresenter) {
         <button id="fullscreenBtn" title="Toggle fullscreen on presentation window">⛶ Full Screen</button>
         <button id="bleepBtn">🔇 Bleep</button>
         <span class="presenter-divider">|</span>
+        <div class="font-size-control">
+          <label for="notesFontSize">Notes Size</label>
+          <input type="range" id="notesFontSize" min="80" max="200" value="140">
+          <span id="notesFontSizeValue">140%</span>
+        </div>
+        <span class="presenter-divider">|</span>
         <label class="presenter-toggle">
           <input type="checkbox" id="presenterSubtitles">
           <span class="presenter-toggle-label">Subtitles</span>
@@ -378,32 +564,44 @@ if (isPresenter) {
       </div>
       
       <div id="presenter-main">
-        <div class="slide-panel current">
-          <div class="panel-header">
-            <h3>Current Slide</h3>
+        <!-- Top: Current slide speaker notes (takes most of the space) -->
+        <div id="current-notes-section">
+          <div class="section-header">
+            <h3>Current Slide Notes</h3>
             <span class="slide-number" id="current-slide-number">--</span>
           </div>
-          <div class="notes-section">
-            <div class="notes-label">Speaker Notes</div>
+          <div class="notes-content">
             <div class="notes-text" id="current-notes"></div>
-          </div>
-          <div class="preview-container" id="current-preview"></div>
-          <div id="video-seek-container">
-            <div class="seek-label">🎬 Video Seek <span id="video-time"></span></div>
-            <input type="range" id="seekSlider" min="0" max="100" value="0">
           </div>
         </div>
         
-        <div class="slide-panel next">
-          <div class="panel-header">
-            <h3>Next Slide</h3>
-            <span class="slide-number" id="next-slide-number">--</span>
+        <!-- Bottom: Previews and next slide info -->
+        <div id="bottom-section">
+          <!-- Current slide preview (small) -->
+          <div id="current-preview-panel">
+            <div class="preview-header">
+              <h4>Current Preview</h4>
+            </div>
+            <div class="preview-container" id="current-preview"></div>
+            <div id="video-seek-container">
+              <div class="seek-label">🎬 Seek <span id="video-time"></span></div>
+              <input type="range" id="seekSlider" min="0" max="100" value="0">
+            </div>
           </div>
-          <div class="notes-section">
-            <div class="notes-label">Speaker Notes</div>
-            <div class="notes-text" id="next-notes"></div>
+          
+          <!-- Next slide panel (small preview + small notes) -->
+          <div id="next-slide-panel">
+            <div class="next-preview" id="next-preview"></div>
+            <div class="next-info">
+              <div class="next-header">
+                <h4>Next Slide</h4>
+                <span class="slide-number" id="next-slide-number">--</span>
+              </div>
+              <div class="next-notes">
+                <div class="notes-text" id="next-notes"></div>
+              </div>
+            </div>
           </div>
-          <div class="preview-container" id="next-preview"></div>
         </div>
       </div>
     </div>
@@ -434,6 +632,28 @@ if (isPresenter) {
       (seconds < 10 ? "0" + seconds : seconds)
     );
   }
+
+  // Font size control for speaker notes
+  var notesFontSizeSlider = document.getElementById("notesFontSize");
+  var notesFontSizeValue = document.getElementById("notesFontSizeValue");
+  var currentNotesText = document.getElementById("current-notes");
+  
+  // Load saved font size from localStorage
+  var savedFontSize = localStorage.getItem("presenterNotesFontSize");
+  if (savedFontSize) {
+    notesFontSizeSlider.value = savedFontSize;
+    notesFontSizeValue.textContent = savedFontSize + "%";
+    currentNotesText.style.fontSize = (parseFloat(savedFontSize) / 100 * 1.4) + "rem";
+  }
+  
+  notesFontSizeSlider.addEventListener("input", function() {
+    var size = this.value;
+    notesFontSizeValue.textContent = size + "%";
+    // Base font size is 1.4rem, scale from there
+    currentNotesText.style.fontSize = (parseFloat(size) / 100 * 1.4) + "rem";
+    // Save to localStorage for persistence
+    localStorage.setItem("presenterNotesFontSize", size);
+  });
 
   document.getElementById("startPresBtn").addEventListener("click", function() {
     if (window.opener && !window.opener.closed) {
