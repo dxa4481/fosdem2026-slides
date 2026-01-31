@@ -728,18 +728,19 @@ if (isPresenter) {
     var maxSize = 6.0;  // rem
     var optimalSize = minSize;
     
-    // Temporarily store original styles
-    var originalOverflow = notesContentContainer.style.overflow;
-    
-    while (maxSize - minSize > 0.05) {
+    while (maxSize - minSize > 0.02) {
       var midSize = (minSize + maxSize) / 2;
       currentNotesText.style.fontSize = midSize + "rem";
       
+      // Force layout recalculation
+      void notesContentContainer.offsetHeight;
+      
       // Check if text fits (no scrolling needed)
+      // Use strict comparison - scrollHeight must be clearly less than clientHeight
       var scrollHeight = notesContentContainer.scrollHeight;
       var clientHeight = notesContentContainer.clientHeight;
       
-      if (scrollHeight <= clientHeight + 2) {  // 2px tolerance
+      if (scrollHeight <= clientHeight) {
         // Text fits, try larger
         optimalSize = midSize;
         minSize = midSize;
@@ -749,11 +750,12 @@ if (isPresenter) {
       }
     }
     
-    // Apply the optimal size
-    currentNotesText.style.fontSize = optimalSize + "rem";
+    // Apply a small safety reduction (5%) to ensure text is never cut off
+    var safeSize = optimalSize * 0.95;
+    currentNotesText.style.fontSize = safeSize + "rem";
     
     // Update the slider display to reflect the auto-fit size (as percentage of 1.4rem base)
-    var percentage = Math.round((optimalSize / 1.4) * 100);
+    var percentage = Math.round((safeSize / 1.4) * 100);
     notesFontSizeValue.textContent = percentage + "%";
   }
   
