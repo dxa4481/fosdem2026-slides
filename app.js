@@ -1,3 +1,26 @@
+/**
+ * Simple Presentation App - Main Application
+ * 
+ * OFFLINE CAPABILITY SUMMARY:
+ * ===========================
+ * 
+ * WORKS OFFLINE (after initial setup):
+ * - Presentation playback (slides, videos, images, audio)
+ * - Video editing with FFmpeg (uses local WASM files in lib/ffmpeg/)
+ * - Live subtitles with Whisper (requires pre-downloaded model in models/Xenova/whisper-tiny.en/)
+ * - All UI/editing functionality
+ * 
+ * REQUIRES INTERNET:
+ * - AI Video Generation (uses Google Gemini/Veo API - generativelanguage.googleapis.com)
+ * - Live subtitles via Web Speech API (default mode, not offline mode)
+ * - First-time Whisper model download (after download, works offline)
+ * 
+ * To enable full offline Whisper subtitles:
+ * 1. Download model files from https://huggingface.co/Xenova/whisper-tiny.en/tree/main
+ * 2. Place them in: models/Xenova/whisper-tiny.en/
+ * 3. Enable "Offline Mode" toggle in the UI
+ */
+
 var isPresenter = (window.location.search.indexOf("presenter") !== -1);
 
 if (isPresenter) {
@@ -2662,7 +2685,15 @@ if (isPresenter) {
     }
   });
   
+  // ============================================================================
   // Video Generation Service
+  // ============================================================================
+  // REQUIRES INTERNET: This feature uses Google's Gemini/Veo API and will not
+  // work offline. It requires:
+  // - Active internet connection
+  // - Valid Google AI API key with billing enabled
+  // - Access to generativelanguage.googleapis.com
+  // ============================================================================
   async function generateAIVideo(params) {
     var apiKey = getApiKey();
     if (!apiKey) {
