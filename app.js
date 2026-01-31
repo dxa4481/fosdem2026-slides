@@ -209,6 +209,53 @@ if (isPresenter) {
       text-align: right;
     }
     
+    .font-size-control input[type="range"]:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    
+    .font-size-control input[type="range"]:disabled::-webkit-slider-thumb {
+      background: rgba(255,255,255,0.3);
+      cursor: not-allowed;
+    }
+    
+    .auto-fit-toggle {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      background: rgba(255,255,255,0.05);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    
+    .auto-fit-toggle:hover {
+      background: rgba(255,255,255,0.1);
+    }
+    
+    .auto-fit-toggle input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      cursor: pointer;
+      accent-color: #10b981;
+    }
+    
+    .auto-fit-toggle-label {
+      font-size: 0.75rem;
+      color: rgba(255,255,255,0.8);
+      white-space: nowrap;
+    }
+    
+    .auto-fit-toggle.active {
+      background: rgba(16, 185, 129, 0.2);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+    
+    .auto-fit-toggle.active .auto-fit-toggle-label {
+      color: #6ee7b7;
+    }
+    
     /* Main layout: top-heavy for notes, bottom for previews */
     #presenter-main {
       display: flex;
@@ -551,6 +598,10 @@ if (isPresenter) {
           <input type="range" id="notesFontSize" min="80" max="200" value="140">
           <span id="notesFontSizeValue">140%</span>
         </div>
+        <label class="auto-fit-toggle" id="autoFitToggle">
+          <input type="checkbox" id="autoFitCheckbox">
+          <span class="auto-fit-toggle-label">Auto-fit</span>
+        </label>
         <span class="presenter-divider">|</span>
         <label class="presenter-toggle">
           <input type="checkbox" id="presenterSubtitles">
@@ -637,6 +688,10 @@ if (isPresenter) {
   var notesFontSizeSlider = document.getElementById("notesFontSize");
   var notesFontSizeValue = document.getElementById("notesFontSizeValue");
   var currentNotesText = document.getElementById("current-notes");
+  var autoFitCheckbox = document.getElementById("autoFitCheckbox");
+  var autoFitToggle = document.getElementById("autoFitToggle");
+  var notesContentContainer = document.querySelector("#current-notes-section .notes-content");
+  var isAutoFitEnabled = false;
   
   // Load saved font size from localStorage
   var savedFontSize = localStorage.getItem("presenterNotesFontSize");
@@ -646,13 +701,100 @@ if (isPresenter) {
     currentNotesText.style.fontSize = (parseFloat(savedFontSize) / 100 * 1.4) + "rem";
   }
   
+  // Load auto-fit setting from localStorage
+  var savedAutoFit = localStorage.getItem("presenterNotesAutoFit");
+  if (savedAutoFit === "true") {
+    isAutoFitEnabled = true;
+    autoFitCheckbox.checked = true;
+    autoFitToggle.classList.add("active");
+    notesFontSizeSlider.disabled = true;
+  }
+  
+  // Calculate and apply auto-fit font size
+  function calculateAutoFitFontSize() {
+    if (!isAutoFitEnabled || !currentNotesText.innerText.trim()) {
+      return;
+    }
+    
+    var containerHeight = notesContentContainer.clientHeight;
+    var containerWidth = notesContentContainer.clientWidth;
+    
+    if (containerHeight <= 0 || containerWidth <= 0) {
+      return;
+    }
+    
+    // Binary search for the optimal font size
+    var minSize = 0.5;  // rem
+    var maxSize = 6.0;  // rem
+    var optimalSize = minSize;
+    
+    while (maxSize - minSize > 0.02) {
+      var midSize = (minSize + maxSize) / 2;
+      currentNotesText.style.fontSize = midSize + "rem";
+      
+      // Force layout recalculation
+      void notesContentContainer.offsetHeight;
+      
+      // Check if text fits (no scrolling needed)
+      // Use strict comparison - scrollHeight must be clearly less than clientHeight
+      var scrollHeight = notesContentContainer.scrollHeight;
+      var clientHeight = notesContentContainer.clientHeight;
+      
+      if (scrollHeight <= clientHeight) {
+        // Text fits, try larger
+        optimalSize = midSize;
+        minSize = midSize;
+      } else {
+        // Text too big, try smaller
+        maxSize = midSize;
+      }
+    }
+    
+    // Apply a small safety reduction (5%) to ensure text is never cut off
+    var safeSize = optimalSize * 0.95;
+    currentNotesText.style.fontSize = safeSize + "rem";
+    
+    // Update the slider display to reflect the auto-fit size (as percentage of 1.4rem base)
+    var percentage = Math.round((safeSize / 1.4) * 100);
+    notesFontSizeValue.textContent = percentage + "%";
+  }
+  
+  // Handle auto-fit checkbox change
+  autoFitCheckbox.addEventListener("change", function() {
+    isAutoFitEnabled = this.checked;
+    localStorage.setItem("presenterNotesAutoFit", isAutoFitEnabled);
+    
+    if (isAutoFitEnabled) {
+      autoFitToggle.classList.add("active");
+      notesFontSizeSlider.disabled = true;
+      calculateAutoFitFontSize();
+    } else {
+      autoFitToggle.classList.remove("active");
+      notesFontSizeSlider.disabled = false;
+      // Restore manual font size
+      var size = notesFontSizeSlider.value;
+      currentNotesText.style.fontSize = (parseFloat(size) / 100 * 1.4) + "rem";
+      notesFontSizeValue.textContent = size + "%";
+    }
+  });
+  
   notesFontSizeSlider.addEventListener("input", function() {
+    if (isAutoFitEnabled) return;  // Ignore if auto-fit is enabled
     var size = this.value;
     notesFontSizeValue.textContent = size + "%";
     // Base font size is 1.4rem, scale from there
     currentNotesText.style.fontSize = (parseFloat(size) / 100 * 1.4) + "rem";
     // Save to localStorage for persistence
     localStorage.setItem("presenterNotesFontSize", size);
+  });
+  
+  // Recalculate auto-fit on window resize
+  var resizeTimeout;
+  window.addEventListener("resize", function() {
+    if (isAutoFitEnabled) {
+      clearTimeout(resizeTimeout);
+      resizeTimeout = setTimeout(calculateAutoFitFontSize, 100);
+    }
   });
 
   document.getElementById("startPresBtn").addEventListener("click", function() {
@@ -769,6 +911,12 @@ if (isPresenter) {
       
       var notes = (curSlide.notes || "").replace(/^Slide\s*\d+\s*:\s*/i, "");
       document.getElementById("current-notes").innerText = notes;
+      
+      // Recalculate auto-fit font size when notes change
+      if (isAutoFitEnabled) {
+        // Use a small delay to ensure the DOM has updated
+        setTimeout(calculateAutoFitFontSize, 10);
+      }
 
       var nextPreview = document.getElementById("next-preview");
       var nextBufferedIndex = bufferedIndex + 1;
