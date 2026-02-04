@@ -168,9 +168,7 @@ async function loadVideo(file) {
     URL.revokeObjectURL(State.videoUrl);
   }
   
-  // Store video data immediately to avoid stale file references
-  State.videoData = await file.arrayBuffer();
-  
+  // Create object URL for playback (this works even without reading the full file)
   State.videoUrl = URL.createObjectURL(file);
   DOM.videoPlayer.src = State.videoUrl;
   
@@ -179,7 +177,42 @@ async function loadVideo(file) {
   DOM.videoContainer.style.display = 'flex';
   DOM.videoControls.style.display = 'flex';
   
-  console.log('[SubtitleEditor] Video loaded:', file.name);
+  // Pre-load video data in background (for FFmpeg processing later)
+  // We do this after showing the UI so the user sees immediate feedback
+  try {
+    State.videoData = await file.arrayBuffer();
+    console.log('[SubtitleEditor] Video loaded and cached:', file.name, '(' + Math.round(State.videoData.byteLength / 1024 / 1024) + ' MB)');
+  } catch (e) {
+    console.warn('[SubtitleEditor] Could not pre-cache video data, will retry when needed:', e.message);
+    State.videoData = null;
+  }
+}
+
+// Ensure video data is loaded (retry if needed)
+async function ensureVideoData() {
+  if (State.videoData) {
+    return State.videoData;
+  }
+  
+  if (!State.videoFile) {
+    throw new Error('No video file loaded');
+  }
+  
+  // Try to read from file
+  try {
+    State.videoData = await State.videoFile.arrayBuffer();
+    return State.videoData;
+  } catch (e) {
+    // File reference is stale, try to fetch from the object URL
+    console.log('[SubtitleEditor] File reference stale, fetching from object URL...');
+    try {
+      const response = await fetch(State.videoUrl);
+      State.videoData = await response.arrayBuffer();
+      return State.videoData;
+    } catch (e2) {
+      throw new Error('Could not read video file. Please try re-uploading the video.');
+    }
+  }
 }
 
 function clearVideo() {
@@ -276,8 +309,9 @@ async function extractAudioFromVideo(progressCallback) {
   
   const ffmpeg = State.ffmpeg;
   
-  // Write video to FFmpeg (use pre-loaded videoData to avoid stale file references)
-  const videoData = new Uint8Array(State.videoData);
+  // Ensure video data is available
+  const videoDataBuffer = await ensureVideoData();
+  const videoData = new Uint8Array(videoDataBuffer);
   await ffmpeg.writeFile('input.mp4', videoData);
   
   if (progressCallback) progressCallback(30, 'Extracting audio...');
@@ -934,8 +968,9 @@ async function exportVideo() {
     
     updateLoading(10, 'Preparing files...');
     
-    // Write video file (use pre-loaded videoData to avoid stale file references)
-    const videoData = new Uint8Array(State.videoData);
+    // Ensure video data is available and write to FFmpeg
+    const videoDataBuffer = await ensureVideoData();
+    const videoData = new Uint8Array(videoDataBuffer);
     await ffmpeg.writeFile('input.mp4', videoData);
     
     // Generate ASS subtitle file
