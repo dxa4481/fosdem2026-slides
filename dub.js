@@ -454,13 +454,13 @@ function isFileTooLarge(file) {
 function getSuggestedDurationLimit(fileSizeMB) {
   // For very large files, limit transcription duration
   // FFmpeg.wasm has very limited memory (~1-2GB usable), so we need to be very conservative
-  // With 250MB max input and ~50MB/min, we can do about 5 minutes max
-  // The abort happens when FFmpeg runs out of heap memory during cleanup
-  if (fileSizeMB > 4000) return 3 * 60;  // 3 minutes for >4GB (very large files)
-  if (fileSizeMB > 3000) return 4 * 60;  // 4 minutes for >3GB
-  if (fileSizeMB > 2000) return 5 * 60;  // 5 minutes for >2GB
-  if (fileSizeMB > 1500) return 5 * 60;  // 5 minutes for >1.5GB
-  return 5 * 60; // 5 minutes max for any large file
+  // For files >2GB, we try Web Audio API first which can handle longer durations
+  // FFmpeg fallback is limited to ~2 minutes max with 100MB input
+  if (fileSizeMB > 4000) return 2 * 60;  // 2 minutes for >4GB (very large files)
+  if (fileSizeMB > 3000) return 2 * 60;  // 2 minutes for >3GB
+  if (fileSizeMB > 2000) return 2 * 60;  // 2 minutes for >2GB
+  if (fileSizeMB > 1500) return 3 * 60;  // 3 minutes for >1.5GB
+  return 3 * 60; // 3 minutes max for any large file using FFmpeg
 }
 
 async function extractAudioFromVideo(progressCallback, durationLimitSeconds = null) {
@@ -539,6 +539,151 @@ async function extractAudioFromVideo(progressCallback, durationLimitSeconds = nu
   return audioData;
 }
 
+// Extract audio using Web Audio API (works better for very large files)
+// This plays the video silently and captures audio in real-time
+async function extractAudioWithWebAudio(durationLimitSeconds, progressCallback) {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement('video');
+    video.muted = true; // Mute to avoid audio feedback
+    video.src = State.videoUrl;
+    
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)({
+      sampleRate: 16000 // Whisper expects 16kHz
+    });
+    
+    // Create a media element source
+    const source = audioContext.createMediaElementSource(video);
+    
+    // Create a script processor to capture audio
+    const bufferSize = 4096;
+    const processor = audioContext.createScriptProcessor(bufferSize, 1, 1);
+    
+    const audioChunks = [];
+    let totalSamples = 0;
+    const maxSamples = durationLimitSeconds * 16000; // 16kHz sample rate
+    
+    processor.onaudioprocess = (e) => {
+      if (totalSamples >= maxSamples) {
+        return;
+      }
+      
+      const inputData = e.inputBuffer.getChannelData(0);
+      const chunk = new Float32Array(inputData.length);
+      chunk.set(inputData);
+      audioChunks.push(chunk);
+      totalSamples += inputData.length;
+      
+      if (progressCallback) {
+        const progress = Math.min(40, 10 + (totalSamples / maxSamples) * 30);
+        const seconds = Math.round(totalSamples / 16000);
+        progressCallback(progress, `Extracting audio... ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`);
+      }
+    };
+    
+    source.connect(processor);
+    processor.connect(audioContext.destination);
+    
+    video.onloadedmetadata = () => {
+      video.playbackRate = 16; // Speed up to 16x for faster extraction
+      video.play().catch(reject);
+    };
+    
+    video.onerror = () => {
+      reject(new Error('Failed to load video for audio extraction'));
+    };
+    
+    // Check periodically if we have enough audio
+    const checkInterval = setInterval(() => {
+      if (totalSamples >= maxSamples || video.ended) {
+        clearInterval(checkInterval);
+        video.pause();
+        processor.disconnect();
+        source.disconnect();
+        audioContext.close();
+        
+        // Combine all chunks into one buffer
+        const totalLength = audioChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+        const combinedAudio = new Float32Array(Math.min(totalLength, maxSamples));
+        let offset = 0;
+        for (const chunk of audioChunks) {
+          const remaining = combinedAudio.length - offset;
+          if (remaining <= 0) break;
+          const copyLength = Math.min(chunk.length, remaining);
+          combinedAudio.set(chunk.subarray(0, copyLength), offset);
+          offset += copyLength;
+        }
+        
+        // Convert to WAV format (16-bit PCM)
+        const wavBuffer = float32ToWav(combinedAudio, 16000);
+        resolve(new Uint8Array(wavBuffer));
+      }
+    }, 500);
+    
+    // Timeout after duration limit + some buffer
+    setTimeout(() => {
+      clearInterval(checkInterval);
+      video.pause();
+      try {
+        processor.disconnect();
+        source.disconnect();
+        audioContext.close();
+      } catch (e) {}
+      
+      if (audioChunks.length === 0) {
+        reject(new Error('No audio captured'));
+      } else {
+        // Return what we have
+        const totalLength = audioChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+        const combinedAudio = new Float32Array(totalLength);
+        let offset = 0;
+        for (const chunk of audioChunks) {
+          combinedAudio.set(chunk, offset);
+          offset += chunk.length;
+        }
+        const wavBuffer = float32ToWav(combinedAudio, 16000);
+        resolve(new Uint8Array(wavBuffer));
+      }
+    }, (durationLimitSeconds / 16 + 30) * 1000); // Account for 16x playback speed + buffer
+  });
+}
+
+// Convert Float32Array audio to WAV format
+function float32ToWav(samples, sampleRate) {
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+  
+  // WAV header
+  const writeString = (offset, string) => {
+    for (let i = 0; i < string.length; i++) {
+      view.setUint8(offset + i, string.charCodeAt(i));
+    }
+  };
+  
+  writeString(0, 'RIFF');
+  view.setUint32(4, 36 + samples.length * 2, true);
+  writeString(8, 'WAVE');
+  writeString(12, 'fmt ');
+  view.setUint32(16, 16, true); // Subchunk1Size
+  view.setUint16(20, 1, true); // AudioFormat (PCM)
+  view.setUint16(22, 1, true); // NumChannels
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true); // ByteRate
+  view.setUint16(32, 2, true); // BlockAlign
+  view.setUint16(34, 16, true); // BitsPerSample
+  writeString(36, 'data');
+  view.setUint32(40, samples.length * 2, true);
+  
+  // Write samples as 16-bit PCM
+  let offset = 44;
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    offset += 2;
+  }
+  
+  return buffer;
+}
+
 // Extract audio from large video files by reading chunks
 async function extractAudioFromLargeVideo(ffmpeg, progressCallback, durationLimitSeconds) {
   const file = State.videoFile;
@@ -557,19 +702,32 @@ async function extractAudioFromLargeVideo(ffmpeg, progressCallback, durationLimi
     );
   }
   
+  // For very large files, try using Web Audio API instead of FFmpeg
+  // This extracts audio without loading the whole file into memory
+  if (fileSizeMB > 2000) {
+    console.log('[SubtitleEditor] File very large, trying Web Audio API approach...');
+    if (progressCallback) progressCallback(10, 'Trying alternative audio extraction...');
+    try {
+      const audioData = await extractAudioWithWebAudio(durationLimitSeconds, progressCallback);
+      if (audioData) {
+        State.partialTranscription = true;
+        State.transcriptionDurationLimit = durationLimitSeconds;
+        return audioData;
+      }
+    } catch (e) {
+      console.warn('[SubtitleEditor] Web Audio extraction failed, falling back to FFmpeg:', e);
+    }
+  }
+  
   // For large files, we extract audio by reading a portion of the file
   // We estimate how much of the file we need based on duration
   // Typical video bitrate: ~5-10 Mbps, so 1 minute ≈ 40-80MB
   
   // Estimate bytes needed for the duration we want
   // Use a very conservative estimate to avoid memory issues
-  // FFmpeg.wasm has limited heap (~1-2GB), and we need room for:
-  // - Input video data
-  // - Internal processing buffers  
-  // - Output audio data
-  // Cap at 250MB to leave plenty of headroom for FFmpeg's internal allocations
-  const bytesPerMinute = 50 * 1024 * 1024; // 50MB per minute estimate
-  const maxInputBytes = 250 * 1024 * 1024; // Max 250MB input
+  // FFmpeg.wasm has extremely limited heap, cap at 100MB input
+  const bytesPerMinute = 40 * 1024 * 1024; // 40MB per minute estimate
+  const maxInputBytes = 100 * 1024 * 1024; // Max 100MB input - very conservative
   const estimatedBytesNeeded = Math.min(
     (durationLimitSeconds / 60) * bytesPerMinute,
     maxInputBytes
