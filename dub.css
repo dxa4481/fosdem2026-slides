@@ -705,6 +705,104 @@ html, body {
 }
 
 /* ============================================
+   Chunked Transcription Panel
+   ============================================ */
+.chunk-panel {
+  background: linear-gradient(135deg, #1e3a5f 0%, #16213e 100%);
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.chunk-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.chunk-header h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #a78bfa;
+}
+
+#chunk-progress {
+  font-size: 0.85rem;
+  color: rgba(255, 255, 255, 0.7);
+  background: rgba(139, 92, 246, 0.2);
+  padding: 4px 10px;
+  border-radius: 12px;
+}
+
+.chunk-status {
+  font-size: 0.9rem;
+  color: rgba(255, 255, 255, 0.8);
+  margin-bottom: 12px;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+}
+
+.chunk-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.chunk-time {
+  font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+  font-size: 0.9rem;
+  color: #a78bfa;
+  background: rgba(139, 92, 246, 0.15);
+  padding: 6px 12px;
+  border-radius: 4px;
+  display: inline-block;
+  width: fit-content;
+}
+
+.chunk-text {
+  width: 100%;
+  min-height: 60px;
+  padding: 12px;
+  font-size: 0.95rem;
+  font-family: inherit;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  color: white;
+  resize: vertical;
+}
+
+.chunk-text:focus {
+  outline: none;
+  border-color: rgba(139, 92, 246, 0.5);
+}
+
+.chunk-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.chunk-actions .btn {
+  padding: 8px 16px;
+  font-size: 0.9rem;
+}
+
+.btn-danger {
+  background: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.btn-danger:hover {
+  background: rgba(239, 68, 68, 0.3);
+  border-color: rgba(239, 68, 68, 0.5);
+}
+
+/* ============================================
    Scrollbar
    ============================================ */
 ::-webkit-scrollbar {

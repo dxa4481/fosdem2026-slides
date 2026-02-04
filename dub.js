@@ -30,7 +30,17 @@ const State = {
   partialTranscription: false, // True if only part of video was transcribed
   transcriptionDurationLimit: null, // Duration limit in seconds if partial
   webAudioFailed: false, // If Web Audio capture failed, don't retry
-  mediaElementSource: null // Cache to avoid creating multiple sources
+  mediaElementSource: null, // Cache to avoid creating multiple sources
+  
+  // Chunked transcription state (for large files)
+  chunkedMode: false,
+  chunkDuration: 10, // 10 seconds per chunk
+  currentChunkStart: 0,
+  videoDuration: 0,
+  chunkAbortController: null, // To cancel chunk processing
+  pendingChunkText: '', // Text from current chunk awaiting review
+  pendingChunkStart: 0,
+  pendingChunkEnd: 0
 };
 
 // ============================================================================
@@ -46,6 +56,7 @@ const DOM = {
   subtitleOverlay: null,
   subtitleText: null,
   generateBtn: null,
+  chunkedBtn: null,
   clearVideoBtn: null,
   subtitleList: null,
   emptyState: null,
@@ -80,6 +91,7 @@ function initDOM() {
   DOM.subtitleOverlay = document.getElementById('subtitle-overlay');
   DOM.subtitleText = document.getElementById('subtitle-text');
   DOM.generateBtn = document.getElementById('generate-btn');
+  DOM.chunkedBtn = document.getElementById('chunked-btn');
   DOM.clearVideoBtn = document.getElementById('clear-video-btn');
   DOM.subtitleList = document.getElementById('subtitle-list');
   DOM.emptyState = document.getElementById('empty-state');
@@ -118,6 +130,7 @@ function initEventListeners() {
   
   // Video controls
   DOM.generateBtn.addEventListener('click', generateSubtitles);
+  DOM.chunkedBtn.addEventListener('click', startChunkedTranscription);
   DOM.clearVideoBtn.addEventListener('click', clearVideo);
   
   // Video playback - update subtitle display
@@ -764,6 +777,427 @@ function float32ToWav(samples, sampleRate) {
   return buffer;
 }
 
+// ============================================================================
+// CHUNKED TRANSCRIPTION (10 seconds at a time for large files)
+// ============================================================================
+
+// Capture audio from a specific time range using Web Audio API
+async function captureChunkAudio(startTime, duration, progressCallback) {
+  return new Promise((resolve, reject) => {
+    console.log(`[ChunkedTranscription] Capturing ${duration}s from ${startTime}s`);
+    
+    // Create a fresh video element
+    const video = document.createElement('video');
+    video.src = State.videoUrl;
+    video.preload = 'auto';
+    video.currentTime = startTime;
+    
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const targetSampleRate = 16000;
+    
+    let source;
+    const audioChunks = [];
+    let totalSamples = 0;
+    const maxSamplesAtContextRate = duration * audioContext.sampleRate;
+    let processor = null;
+    let silencer = null;
+    let started = false;
+    let captureStartTime = 0;
+    
+    const cleanup = () => {
+      video.pause();
+      video.src = '';
+      try {
+        if (processor) processor.disconnect();
+        if (source) source.disconnect();
+        if (silencer) silencer.disconnect();
+        audioContext.close();
+      } catch (e) {}
+    };
+    
+    const finishCapture = () => {
+      cleanup();
+      
+      console.log(`[ChunkedTranscription] Captured ${audioChunks.length} chunks, ${totalSamples} samples`);
+      
+      if (audioChunks.length === 0 || totalSamples < audioContext.sampleRate * 0.5) {
+        // Less than 0.5 seconds - might be at end of video
+        resolve(null);
+        return;
+      }
+      
+      // Combine all chunks
+      const totalLength = audioChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+      const combinedAudio = new Float32Array(totalLength);
+      let offset = 0;
+      for (const chunk of audioChunks) {
+        combinedAudio.set(chunk, offset);
+        offset += chunk.length;
+      }
+      
+      // Resample to 16kHz
+      const resampledAudio = resampleAudio(combinedAudio, audioContext.sampleRate, targetSampleRate);
+      
+      // Convert to WAV
+      const wavBuffer = float32ToWav(resampledAudio, targetSampleRate);
+      resolve(new Uint8Array(wavBuffer));
+    };
+    
+    const startCapture = async () => {
+      if (started) return;
+      started = true;
+      captureStartTime = Date.now();
+      
+      try {
+        source = audioContext.createMediaElementSource(video);
+        
+        silencer = audioContext.createGain();
+        silencer.gain.value = 0;
+        
+        const bufferSize = 4096;
+        processor = audioContext.createScriptProcessor(bufferSize, 1, 1);
+        
+        processor.onaudioprocess = (e) => {
+          if (totalSamples >= maxSamplesAtContextRate) return;
+          
+          const inputData = e.inputBuffer.getChannelData(0);
+          const chunk = new Float32Array(inputData.length);
+          chunk.set(inputData);
+          audioChunks.push(chunk);
+          totalSamples += inputData.length;
+          
+          if (progressCallback) {
+            const capturedSeconds = totalSamples / audioContext.sampleRate;
+            const pct = Math.min(100, (capturedSeconds / duration) * 100);
+            progressCallback(pct, `Capturing: ${capturedSeconds.toFixed(1)}s / ${duration}s`);
+          }
+        };
+        
+        source.connect(processor);
+        processor.connect(silencer);
+        silencer.connect(audioContext.destination);
+        
+        if (audioContext.state === 'suspended') {
+          await audioContext.resume();
+        }
+        
+        video.playbackRate = 1;
+        await video.play();
+        
+      } catch (e) {
+        console.error('[ChunkedTranscription] Setup failed:', e);
+        cleanup();
+        reject(new Error('Audio capture failed: ' + e.message));
+      }
+    };
+    
+    // Handle seek completion
+    video.addEventListener('seeked', () => {
+      console.log(`[ChunkedTranscription] Seeked to ${video.currentTime}s`);
+      startCapture();
+    }, { once: true });
+    
+    video.addEventListener('canplay', () => {
+      if (video.currentTime >= startTime - 0.5) {
+        startCapture();
+      }
+    }, { once: true });
+    
+    video.addEventListener('error', () => {
+      cleanup();
+      reject(new Error('Video failed to load'));
+    }, { once: true });
+    
+    video.addEventListener('ended', () => {
+      finishCapture();
+    }, { once: true });
+    
+    video.load();
+    
+    // Check if we have enough audio
+    const checkInterval = setInterval(() => {
+      if (totalSamples >= maxSamplesAtContextRate) {
+        clearInterval(checkInterval);
+        finishCapture();
+      }
+    }, 500);
+    
+    // Timeout
+    const timeoutMs = (duration + 15) * 1000;
+    setTimeout(() => {
+      clearInterval(checkInterval);
+      if (totalSamples > audioContext.sampleRate * 0.5) {
+        finishCapture();
+      } else {
+        cleanup();
+        reject(new Error('Capture timed out'));
+      }
+    }, timeoutMs);
+  });
+}
+
+// Start chunked transcription workflow
+async function startChunkedTranscription() {
+  if (!State.videoFile) return;
+  
+  State.chunkedMode = true;
+  State.currentChunkStart = 0;
+  State.videoDuration = DOM.videoPlayer.duration || 0;
+  
+  if (!State.videoDuration || State.videoDuration <= 0) {
+    alert('Could not determine video duration. Please wait for video to load.');
+    State.chunkedMode = false;
+    return;
+  }
+  
+  console.log(`[ChunkedTranscription] Starting chunked mode. Video duration: ${State.videoDuration}s`);
+  
+  // Load Whisper first
+  showLoading('Starting Chunked Transcription', 'Loading Whisper model...');
+  
+  try {
+    await initWhisper((progress, message) => {
+      updateLoading(progress * 0.5, 'Loading Whisper: ' + message);
+    });
+    
+    hideLoading();
+    
+    // Show chunked mode UI
+    showChunkedModeUI();
+    
+    // Process first chunk
+    processNextChunk();
+    
+  } catch (error) {
+    hideLoading();
+    alert('Failed to load transcription model: ' + error.message);
+    State.chunkedMode = false;
+  }
+}
+
+// Show the chunked mode UI
+function showChunkedModeUI() {
+  // Create or show chunk review panel
+  let chunkPanel = document.getElementById('chunk-panel');
+  if (!chunkPanel) {
+    chunkPanel = document.createElement('div');
+    chunkPanel.id = 'chunk-panel';
+    chunkPanel.className = 'chunk-panel';
+    chunkPanel.innerHTML = `
+      <div class="chunk-header">
+        <h3>Chunked Transcription</h3>
+        <span id="chunk-progress">Chunk 1 of ?</span>
+      </div>
+      <div id="chunk-status" class="chunk-status">Preparing...</div>
+      <div id="chunk-preview" class="chunk-preview" style="display: none;">
+        <div class="chunk-time" id="chunk-time">00:00 - 00:10</div>
+        <textarea id="chunk-text" class="chunk-text" rows="3" placeholder="Transcribed text will appear here..."></textarea>
+        <div class="chunk-actions">
+          <button id="chunk-play-btn" class="btn btn-secondary">▶ Play Segment</button>
+          <button id="chunk-accept-btn" class="btn btn-primary">✓ Accept & Next</button>
+          <button id="chunk-skip-btn" class="btn btn-secondary">Skip</button>
+          <button id="chunk-stop-btn" class="btn btn-danger">Stop</button>
+        </div>
+      </div>
+    `;
+    
+    // Insert before subtitle list
+    const subtitleSection = DOM.subtitleList.parentElement;
+    subtitleSection.insertBefore(chunkPanel, DOM.subtitleList);
+    
+    // Add event listeners
+    document.getElementById('chunk-play-btn').addEventListener('click', playCurrentChunk);
+    document.getElementById('chunk-accept-btn').addEventListener('click', acceptCurrentChunk);
+    document.getElementById('chunk-skip-btn').addEventListener('click', skipCurrentChunk);
+    document.getElementById('chunk-stop-btn').addEventListener('click', stopChunkedMode);
+  }
+  
+  chunkPanel.style.display = 'block';
+  DOM.generateBtn.style.display = 'none';
+  if (DOM.chunkedBtn) DOM.chunkedBtn.style.display = 'none';
+}
+
+// Hide chunked mode UI
+function hideChunkedModeUI() {
+  const chunkPanel = document.getElementById('chunk-panel');
+  if (chunkPanel) {
+    chunkPanel.style.display = 'none';
+  }
+  DOM.generateBtn.style.display = '';
+  DOM.generateBtn.disabled = false;
+  if (DOM.chunkedBtn) DOM.chunkedBtn.style.display = '';
+}
+
+// Process the next chunk
+async function processNextChunk() {
+  if (!State.chunkedMode) return;
+  
+  const startTime = State.currentChunkStart;
+  const duration = Math.min(State.chunkDuration, State.videoDuration - startTime);
+  
+  if (duration <= 0.5) {
+    // We've reached the end
+    finishChunkedMode();
+    return;
+  }
+  
+  const chunkNum = Math.floor(startTime / State.chunkDuration) + 1;
+  const totalChunks = Math.ceil(State.videoDuration / State.chunkDuration);
+  
+  document.getElementById('chunk-progress').textContent = `Chunk ${chunkNum} of ${totalChunks}`;
+  document.getElementById('chunk-status').textContent = 'Capturing audio...';
+  document.getElementById('chunk-preview').style.display = 'none';
+  
+  try {
+    // Capture audio for this chunk
+    const audioData = await captureChunkAudio(startTime, duration, (pct, msg) => {
+      document.getElementById('chunk-status').textContent = msg;
+    });
+    
+    if (!audioData) {
+      // No audio captured - might be at end
+      finishChunkedMode();
+      return;
+    }
+    
+    if (!State.chunkedMode) return; // User cancelled
+    
+    document.getElementById('chunk-status').textContent = 'Transcribing...';
+    
+    // Convert WAV bytes to Float32Array for transcriber
+    // WAV header is 44 bytes, then 16-bit PCM samples
+    const samples = new Int16Array(audioData.buffer, 44);
+    const float32Samples = new Float32Array(samples.length);
+    for (let i = 0; i < samples.length; i++) {
+      float32Samples[i] = samples[i] / 32768.0;
+    }
+    
+    // Transcribe
+    const result = await State.transcriber(float32Samples, {
+      language: 'english',
+      task: 'transcribe',
+      return_timestamps: true,
+      chunk_length_s: 30,
+      stride_length_s: 5
+    });
+    
+    if (!State.chunkedMode) return; // User cancelled
+    
+    // Process results
+    let chunkText = '';
+    if (result.chunks && result.chunks.length > 0) {
+      chunkText = result.chunks.map(c => c.text.trim()).join(' ').trim();
+    } else if (result.text) {
+      chunkText = result.text.trim();
+    }
+    
+    // Show review UI
+    const endTime = startTime + duration;
+    showChunkReview(startTime, endTime, chunkText);
+    
+  } catch (error) {
+    console.error('[ChunkedTranscription] Error:', error);
+    document.getElementById('chunk-status').textContent = 'Error: ' + error.message;
+    
+    // Auto-skip after error
+    setTimeout(() => {
+      if (State.chunkedMode) {
+        State.currentChunkStart += State.chunkDuration;
+        processNextChunk();
+      }
+    }, 2000);
+  }
+}
+
+// Show chunk review UI
+function showChunkReview(startTime, endTime, text) {
+  State.pendingChunkStart = startTime;
+  State.pendingChunkEnd = endTime;
+  State.pendingChunkText = text;
+  
+  const formatTime = (t) => {
+    const m = Math.floor(t / 60);
+    const s = Math.floor(t % 60);
+    return `${m}:${String(s).padStart(2, '0')}`;
+  };
+  
+  document.getElementById('chunk-status').textContent = 'Review and edit:';
+  document.getElementById('chunk-time').textContent = `${formatTime(startTime)} - ${formatTime(endTime)}`;
+  document.getElementById('chunk-text').value = text || '(no speech detected)';
+  document.getElementById('chunk-preview').style.display = 'block';
+  
+  // Seek video to chunk start
+  DOM.videoPlayer.currentTime = startTime;
+}
+
+// Play current chunk segment
+function playCurrentChunk() {
+  DOM.videoPlayer.currentTime = State.pendingChunkStart;
+  DOM.videoPlayer.play();
+  
+  // Stop at end of chunk
+  const checkEnd = () => {
+    if (DOM.videoPlayer.currentTime >= State.pendingChunkEnd) {
+      DOM.videoPlayer.pause();
+      DOM.videoPlayer.removeEventListener('timeupdate', checkEnd);
+    }
+  };
+  DOM.videoPlayer.addEventListener('timeupdate', checkEnd);
+}
+
+// Accept current chunk and save subtitle
+function acceptCurrentChunk() {
+  const text = document.getElementById('chunk-text').value.trim();
+  
+  if (text && text !== '(no speech detected)') {
+    // Add subtitle
+    const subtitle = {
+      id: State.nextSubtitleId++,
+      start: State.pendingChunkStart,
+      end: State.pendingChunkEnd,
+      text: text
+    };
+    State.subtitles.push(subtitle);
+    renderSubtitleList();
+    updateExportState();
+  }
+  
+  // Move to next chunk
+  State.currentChunkStart += State.chunkDuration;
+  processNextChunk();
+}
+
+// Skip current chunk without saving
+function skipCurrentChunk() {
+  State.currentChunkStart += State.chunkDuration;
+  processNextChunk();
+}
+
+// Stop chunked transcription
+function stopChunkedMode() {
+  State.chunkedMode = false;
+  hideChunkedModeUI();
+  
+  if (State.subtitles.length > 0) {
+    State.partialTranscription = true;
+    updateStatus(`Chunked transcription stopped. ${State.subtitles.length} subtitles created.`);
+  } else {
+    updateStatus('Chunked transcription cancelled.');
+  }
+}
+
+// Finish chunked mode (reached end of video)
+function finishChunkedMode() {
+  State.chunkedMode = false;
+  hideChunkedModeUI();
+  
+  updateStatus(`Transcription complete! ${State.subtitles.length} subtitles created.`);
+  
+  if (State.subtitles.length > 0) {
+    State.partialTranscription = false; // Full video was transcribed
+  }
+}
+
 // Extract audio from large video files by reading chunks
 async function extractAudioFromLargeVideo(ffmpeg, progressCallback, durationLimitSeconds) {
   const file = State.videoFile;
@@ -1055,20 +1489,37 @@ async function generateSubtitles() {
   
   const fileSizeBytes = State.videoFile.size;
   const fileSizeMB = Math.round(fileSizeBytes / (1024 * 1024));
-  console.log('[SubtitleEditor] Starting transcription, file size:', fileSizeMB, 'MB');
+  const videoDuration = DOM.videoPlayer.duration || 0;
+  console.log('[SubtitleEditor] Starting transcription, file size:', fileSizeMB, 'MB, duration:', videoDuration, 's');
   
-  // Check file size limits
-  if (fileSizeMB > ABSOLUTE_MAX_MB) {
-    alert(`File too large (${fileSizeMB} MB).\n\nBrowser-based transcription cannot handle files larger than ${ABSOLUTE_MAX_MB} MB.\n\nPlease use a desktop tool like:\n- OpenAI Whisper (free, command line)\n- MacWhisper (Mac)\n- Buzz (cross-platform)\n\nOr compress your video first using HandBrake or similar.`);
-    return;
-  }
-  
-  if (fileSizeMB > MAX_PARTIAL_READ_MB) {
-    const proceed = confirm(`File is very large (${fileSizeMB} MB).\n\nThis will likely fail due to browser memory limits. We'll try to extract just the first 5 minutes of audio.\n\nFor best results with large files, consider using desktop transcription tools.\n\nTry anyway?`);
-    if (!proceed) return;
-  } else if (fileSizeMB > MAX_FULL_READ_MB) {
-    const proceed = confirm(`File is large (${fileSizeMB} MB).\n\nWe'll extract just the first 10 minutes of audio to avoid browser memory issues.\n\nFor full video transcription, consider using desktop tools or compressing the video first.\n\nContinue?`);
-    if (!proceed) return;
+  // For large files OR long videos, offer chunked mode
+  // Chunked mode works with ANY file size because it only holds 10 seconds of audio at a time
+  if (fileSizeMB > MAX_FULL_READ_MB || videoDuration > 120) {
+    const choice = confirm(
+      `This video is ${fileSizeMB > MAX_FULL_READ_MB ? 'large (' + fileSizeMB + ' MB)' : 'long (' + Math.round(videoDuration/60) + ' minutes)'}.\n\n` +
+      `RECOMMENDED: Use "Chunked Mode" which processes 10 seconds at a time.\n` +
+      `- Works with ANY file size\n` +
+      `- Review each segment as you go\n` +
+      `- Only holds 10 seconds of audio in memory\n\n` +
+      `Click OK for Chunked Mode (recommended)\n` +
+      `Click Cancel to try loading the whole video (may fail for large files)`
+    );
+    
+    if (choice) {
+      startChunkedTranscription();
+      return;
+    }
+    
+    // User chose to try loading whole file - warn if very large
+    if (fileSizeMB > ABSOLUTE_MAX_MB) {
+      alert(`File too large (${fileSizeMB} MB).\n\nPlease use Chunked Mode or a desktop tool.`);
+      return;
+    }
+    
+    if (fileSizeMB > MAX_PARTIAL_READ_MB) {
+      const proceed = confirm(`File is very large (${fileSizeMB} MB).\n\nThis will likely fail. We'll try to extract just the first 5 minutes.\n\nContinue anyway?`);
+      if (!proceed) return;
+    }
   }
   
   DOM.generateBtn.disabled = true;
