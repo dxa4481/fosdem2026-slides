@@ -26,7 +26,9 @@ const State = {
   ffmpegLoaded: false,
   currentSubtitleIndex: -1,
   nextSubtitleId: 1,
-  isManualPreview: false
+  isManualPreview: false,
+  partialTranscription: false, // True if only part of video was transcribed
+  transcriptionDurationLimit: null // Duration limit in seconds if partial
 };
 
 // ============================================================================
@@ -201,6 +203,10 @@ async function loadVideo(file) {
   }
 }
 
+// Maximum file size that can be processed in-browser (1.5GB to be safe with browser limits)
+const MAX_FILE_SIZE_BYTES = 1.5 * 1024 * 1024 * 1024;
+const MAX_FILE_SIZE_MB = Math.round(MAX_FILE_SIZE_BYTES / (1024 * 1024));
+
 // Write file to FFmpeg filesystem using streaming for large files
 async function writeVideoToFFmpeg(ffmpeg, filename, progressCallback) {
   if (!State.videoFile && !State.videoData) {
@@ -214,23 +220,35 @@ async function writeVideoToFFmpeg(ffmpeg, filename, progressCallback) {
     return;
   }
   
-  // For large files, use chunked streaming approach
-  console.log('[SubtitleEditor] Using chunked streaming for large file...');
   const file = State.videoFile;
   const fileSize = file.size;
+  const fileSizeMB = Math.round(fileSize / (1024 * 1024));
+  
+  // Check file size limit - browsers cannot allocate ArrayBuffers larger than ~2GB
+  if (fileSize > MAX_FILE_SIZE_BYTES) {
+    throw new Error(
+      `Video file is too large (${fileSizeMB} MB). ` +
+      `Maximum supported size is ${MAX_FILE_SIZE_MB} MB. ` +
+      `Please compress your video or use a shorter clip.`
+    );
+  }
+  
+  // For large files, use chunked streaming approach
+  console.log('[SubtitleEditor] Using chunked streaming for large file...');
   const chunkSize = 64 * 1024 * 1024; // 64MB chunks
   const totalChunks = Math.ceil(fileSize / chunkSize);
   
-  // Create a buffer to hold all data (we still need to write it all, but we read in chunks)
-  const fileData = new Uint8Array(fileSize);
-  let offset = 0;
+  // Collect chunks in an array first, then concatenate
+  // This is more memory-efficient than pre-allocating one huge buffer
+  const chunks = [];
+  let totalBytesRead = 0;
   
   for (let i = 0; i < totalChunks; i++) {
     const start = i * chunkSize;
     const end = Math.min(start + chunkSize, fileSize);
     
     if (progressCallback) {
-      const percent = Math.round((i / totalChunks) * 20); // 0-20% for reading
+      const percent = Math.round((i / totalChunks) * 15); // 0-15% for reading
       progressCallback(percent, `Reading video file... ${Math.round((end / fileSize) * 100)}%`);
     }
     
@@ -239,18 +257,44 @@ async function writeVideoToFFmpeg(ffmpeg, filename, progressCallback) {
       const blob = file.slice(start, end);
       const chunkBuffer = await blob.arrayBuffer();
       const chunkData = new Uint8Array(chunkBuffer);
-      
-      // Copy to our buffer
-      fileData.set(chunkData, offset);
-      offset += chunkData.length;
+      chunks.push(chunkData);
+      totalBytesRead += chunkData.length;
     } catch (e) {
       console.error('[SubtitleEditor] Error reading chunk', i, ':', e);
+      // Clean up chunks to free memory
+      chunks.length = 0;
       throw new Error(`Failed to read video file at chunk ${i + 1}/${totalChunks}. Error: ${e.message}`);
     }
   }
   
   if (progressCallback) {
-    progressCallback(20, 'Writing to FFmpeg...');
+    progressCallback(15, 'Combining chunks...');
+  }
+  
+  // Now concatenate all chunks into a single buffer
+  let fileData;
+  try {
+    fileData = new Uint8Array(totalBytesRead);
+    let offset = 0;
+    for (const chunk of chunks) {
+      fileData.set(chunk, offset);
+      offset += chunk.length;
+    }
+    // Free chunk memory
+    chunks.length = 0;
+  } catch (e) {
+    // Clean up on allocation failure
+    chunks.length = 0;
+    console.error('[SubtitleEditor] Failed to allocate buffer:', e);
+    throw new Error(
+      `Cannot allocate memory for video file (${fileSizeMB} MB). ` +
+      `Your browser may not have enough memory. ` +
+      `Please try a smaller video file or close other browser tabs.`
+    );
+  }
+  
+  if (progressCallback) {
+    progressCallback(18, 'Writing to FFmpeg...');
   }
   
   // Write the complete file to FFmpeg
@@ -258,7 +302,7 @@ async function writeVideoToFFmpeg(ffmpeg, filename, progressCallback) {
   await ffmpeg.writeFile(filename, fileData);
   
   // Cache for potential reuse if memory allows
-  if (fileSize < 1024 * 1024 * 1024) { // Cache if < 1GB
+  if (fileSize < 500 * 1024 * 1024) { // Only cache if < 500MB
     State.videoData = fileData.buffer;
   }
   
@@ -396,15 +440,45 @@ async function initWhisper(progressCallback) {
   }
 }
 
-async function extractAudioFromVideo(progressCallback) {
+// Check if a file is too large for full processing
+function isFileTooLarge(file) {
+  return file && file.size > MAX_FILE_SIZE_BYTES;
+}
+
+// Get a suggested duration limit for large files (in seconds)
+function getSuggestedDurationLimit(fileSizeMB) {
+  // For very large files, limit transcription to first 30-60 minutes
+  // Rough estimate: 1 hour of HD video is ~2-4GB
+  if (fileSizeMB > 3000) return 30 * 60; // 30 minutes for >3GB
+  if (fileSizeMB > 2000) return 45 * 60; // 45 minutes for >2GB
+  return 60 * 60; // 60 minutes for >1.5GB
+}
+
+async function extractAudioFromVideo(progressCallback, durationLimitSeconds = null) {
   // Initialize FFmpeg if needed
   if (!State.ffmpegLoaded) {
     await initFFmpeg(progressCallback);
   }
   
   const ffmpeg = State.ffmpeg;
+  const file = State.videoFile;
+  const fileSizeMB = Math.round(file.size / (1024 * 1024));
   
-  // Write video to FFmpeg using streaming approach for large files
+  // Check if file is too large for full processing
+  if (isFileTooLarge(file) && !durationLimitSeconds) {
+    // Calculate a suggested duration based on file size
+    durationLimitSeconds = getSuggestedDurationLimit(fileSizeMB);
+    console.log(`[SubtitleEditor] File too large (${fileSizeMB}MB), will transcribe first ${Math.round(durationLimitSeconds/60)} minutes only`);
+  }
+  
+  // For large files, we'll use FFmpeg to extract just audio from the blob URL directly
+  // This avoids loading the entire video file into memory
+  if (isFileTooLarge(file)) {
+    return await extractAudioFromLargeVideo(ffmpeg, progressCallback, durationLimitSeconds);
+  }
+  
+  // Standard approach for smaller files
+  // Write video to FFmpeg using streaming approach
   await writeVideoToFFmpeg(ffmpeg, 'input.mp4', progressCallback);
   
   if (progressCallback) progressCallback(25, 'Extracting audio...');
@@ -427,6 +501,111 @@ async function extractAudioFromVideo(progressCallback) {
   await ffmpeg.deleteFile('audio.wav');
   
   if (progressCallback) progressCallback(40, 'Audio extracted');
+  
+  return audioData;
+}
+
+// Extract audio from large video files by reading chunks
+async function extractAudioFromLargeVideo(ffmpeg, progressCallback, durationLimitSeconds) {
+  const file = State.videoFile;
+  const fileSizeMB = Math.round(file.size / (1024 * 1024));
+  
+  if (progressCallback) {
+    progressCallback(5, `Large file detected (${fileSizeMB}MB). Extracting first ${Math.round(durationLimitSeconds/60)} minutes...`);
+  }
+  
+  // For large files, we extract audio by reading a portion of the file
+  // We estimate how much of the file we need based on duration
+  // Typical video bitrate: ~5-10 Mbps, so 1 minute ≈ 40-80MB
+  
+  // Estimate bytes needed for the duration we want
+  // Use a conservative estimate of 100MB per minute to ensure we get enough
+  const bytesPerMinute = 100 * 1024 * 1024;
+  const estimatedBytesNeeded = Math.min(
+    (durationLimitSeconds / 60) * bytesPerMinute,
+    MAX_FILE_SIZE_BYTES * 0.9 // Leave some headroom
+  );
+  
+  console.log(`[SubtitleEditor] Estimating ${Math.round(estimatedBytesNeeded / (1024*1024))}MB needed for ${Math.round(durationLimitSeconds/60)} minutes`);
+  
+  // Read the portion of the file we need
+  const bytesToRead = Math.min(estimatedBytesNeeded, file.size);
+  const chunkSize = 64 * 1024 * 1024;
+  const totalChunks = Math.ceil(bytesToRead / chunkSize);
+  
+  const chunks = [];
+  let totalBytesRead = 0;
+  
+  for (let i = 0; i < totalChunks; i++) {
+    const start = i * chunkSize;
+    const end = Math.min(start + chunkSize, bytesToRead);
+    
+    if (progressCallback) {
+      const percent = Math.round((i / totalChunks) * 15);
+      progressCallback(percent, `Reading video portion... ${Math.round((end / bytesToRead) * 100)}%`);
+    }
+    
+    try {
+      const blob = file.slice(start, end);
+      const chunkBuffer = await blob.arrayBuffer();
+      chunks.push(new Uint8Array(chunkBuffer));
+      totalBytesRead += chunkBuffer.byteLength;
+    } catch (e) {
+      chunks.length = 0;
+      throw new Error(`Failed to read video file: ${e.message}`);
+    }
+  }
+  
+  if (progressCallback) progressCallback(15, 'Combining data...');
+  
+  // Concatenate chunks
+  let fileData;
+  try {
+    fileData = new Uint8Array(totalBytesRead);
+    let offset = 0;
+    for (const chunk of chunks) {
+      fileData.set(chunk, offset);
+      offset += chunk.length;
+    }
+    chunks.length = 0;
+  } catch (e) {
+    chunks.length = 0;
+    throw new Error(`Cannot allocate memory. Please close other browser tabs and try again.`);
+  }
+  
+  if (progressCallback) progressCallback(18, 'Writing to FFmpeg...');
+  
+  // Write the partial video to FFmpeg
+  await ffmpeg.writeFile('input.mp4', fileData);
+  fileData = null; // Free memory
+  
+  if (progressCallback) progressCallback(20, 'Extracting audio (this may take a while)...');
+  
+  // Extract audio with duration limit
+  const ffmpegArgs = [
+    '-i', 'input.mp4',
+    '-t', String(durationLimitSeconds), // Limit duration
+    '-vn',
+    '-acodec', 'pcm_s16le',
+    '-ar', '16000',
+    '-ac', '1',
+    'audio.wav'
+  ];
+  
+  await ffmpeg.exec(ffmpegArgs);
+  
+  // Read the audio file
+  const audioData = await ffmpeg.readFile('audio.wav');
+  
+  // Clean up
+  await ffmpeg.deleteFile('input.mp4');
+  await ffmpeg.deleteFile('audio.wav');
+  
+  if (progressCallback) progressCallback(40, 'Audio extracted');
+  
+  // Store that we used partial transcription
+  State.partialTranscription = true;
+  State.transcriptionDurationLimit = durationLimitSeconds;
   
   return audioData;
 }
@@ -537,10 +716,23 @@ function processTranscriptionToSubtitles(result) {
 async function generateSubtitles() {
   if (!State.videoFile) return;
   
+  // Reset partial transcription state
+  State.partialTranscription = false;
+  State.transcriptionDurationLimit = null;
+  
   DOM.generateBtn.disabled = true;
   showLoading('Generating Subtitles', 'Initializing...');
   
   try {
+    // Check file size and warn user about large files
+    const fileSizeMB = Math.round(State.videoFile.size / (1024 * 1024));
+    if (isFileTooLarge(State.videoFile)) {
+      const suggestedMinutes = Math.round(getSuggestedDurationLimit(fileSizeMB) / 60);
+      console.log(`[SubtitleEditor] Large file (${fileSizeMB}MB), will transcribe first ${suggestedMinutes} minutes`);
+      updateLoading(5, `Large file detected. Will transcribe first ${suggestedMinutes} minutes...`);
+      await new Promise(resolve => setTimeout(resolve, 1500)); // Let user see the message
+    }
+    
     // Load Whisper model
     updateLoading(10, 'Loading AI model...');
     await initWhisper((progress, message) => {
@@ -567,6 +759,17 @@ async function generateSubtitles() {
     setTimeout(hideLoading, 500);
     
     console.log('[SubtitleEditor] Generated', State.subtitles.length, 'subtitles');
+    
+    // Notify user if partial transcription was used
+    if (State.partialTranscription) {
+      const minutes = Math.round(State.transcriptionDurationLimit / 60);
+      setTimeout(() => {
+        alert(
+          `Note: Due to the large file size, only the first ${minutes} minutes were transcribed.\n\n` +
+          `You can manually add subtitles for the remaining portion of the video using the "Add Subtitle" button.`
+        );
+      }, 600);
+    }
   } catch (error) {
     console.error('[SubtitleEditor] Transcription failed:', error);
     hideLoading();
