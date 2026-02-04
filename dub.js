@@ -840,10 +840,13 @@ async function initFFmpeg(progressCallback) {
     }
   });
   
+  // Use absolute URLs for local files (same approach as app.js)
+  const baseURL = new URL("lib/ffmpeg/", window.location.href).href;
+  
   // Load FFmpeg core
   await State.ffmpeg.load({
-    coreURL: './lib/ffmpeg/ffmpeg-core.js',
-    wasmURL: './lib/ffmpeg/ffmpeg-core.wasm'
+    coreURL: baseURL + "ffmpeg-core.js",
+    wasmURL: baseURL + "ffmpeg-core.wasm"
   });
   
   State.ffmpegLoaded = true;
