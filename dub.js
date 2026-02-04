@@ -203,9 +203,14 @@ async function loadVideo(file) {
   }
 }
 
-// Maximum file size that can be processed in-browser (1.5GB to be safe with browser limits)
+// Maximum file size that can be fully processed in-browser
+// FFmpeg.wasm has severe memory limitations (~1-2GB heap)
 const MAX_FILE_SIZE_BYTES = 1.5 * 1024 * 1024 * 1024;
 const MAX_FILE_SIZE_MB = Math.round(MAX_FILE_SIZE_BYTES / (1024 * 1024));
+
+// Hard limit - files larger than this will likely crash FFmpeg regardless of duration limits
+const HARD_LIMIT_BYTES = 5 * 1024 * 1024 * 1024; // 5GB
+const HARD_LIMIT_MB = Math.round(HARD_LIMIT_BYTES / (1024 * 1024));
 
 // Write file to FFmpeg filesystem using streaming for large files
 async function writeVideoToFFmpeg(ffmpeg, filename, progressCallback) {
@@ -449,12 +454,13 @@ function isFileTooLarge(file) {
 function getSuggestedDurationLimit(fileSizeMB) {
   // For very large files, limit transcription duration
   // FFmpeg.wasm has very limited memory (~1-2GB usable), so we need to be very conservative
+  // With 250MB max input and ~50MB/min, we can do about 5 minutes max
   // The abort happens when FFmpeg runs out of heap memory during cleanup
-  if (fileSizeMB > 4000) return 5 * 60;  // 5 minutes for >4GB (very large files)
-  if (fileSizeMB > 3000) return 7 * 60;  // 7 minutes for >3GB
-  if (fileSizeMB > 2000) return 10 * 60; // 10 minutes for >2GB
-  if (fileSizeMB > 1500) return 15 * 60; // 15 minutes for >1.5GB
-  return 20 * 60; // 20 minutes for other large files
+  if (fileSizeMB > 4000) return 3 * 60;  // 3 minutes for >4GB (very large files)
+  if (fileSizeMB > 3000) return 4 * 60;  // 4 minutes for >3GB
+  if (fileSizeMB > 2000) return 5 * 60;  // 5 minutes for >2GB
+  if (fileSizeMB > 1500) return 5 * 60;  // 5 minutes for >1.5GB
+  return 5 * 60; // 5 minutes max for any large file
 }
 
 async function extractAudioFromVideo(progressCallback, durationLimitSeconds = null) {
@@ -487,8 +493,7 @@ async function extractAudioFromVideo(progressCallback, durationLimitSeconds = nu
   if (progressCallback) progressCallback(25, 'Extracting audio...');
   
   // Extract audio as WAV (16kHz mono for Whisper)
-  // FFmpeg.wasm can abort during cleanup even if extraction succeeds
-  let ffmpegAborted = false;
+  // IMPORTANT: If FFmpeg aborts, the WASM instance becomes unresponsive - don't try to use it
   try {
     await ffmpeg.exec([
       '-i', 'input.mp4',
@@ -499,11 +504,13 @@ async function extractAudioFromVideo(progressCallback, durationLimitSeconds = nu
       'audio.wav'
     ]);
   } catch (e) {
-    console.warn('[SubtitleEditor] FFmpeg exec error (may still have output):', e);
-    ffmpegAborted = true;
+    console.error('[SubtitleEditor] FFmpeg crashed:', e);
+    State.ffmpegLoaded = false;
+    State.ffmpeg = null;
+    throw new Error(`FFmpeg ran out of memory. Please try a smaller video file.`);
   }
   
-  // Delete input video BEFORE reading audio to free memory
+  // FFmpeg succeeded - delete input video BEFORE reading audio to free memory
   if (progressCallback) progressCallback(35, 'Freeing memory...');
   try {
     await ffmpeg.deleteFile('input.mp4');
@@ -511,20 +518,12 @@ async function extractAudioFromVideo(progressCallback, durationLimitSeconds = nu
     console.warn('[SubtitleEditor] Could not delete input file:', e);
   }
   
-  // Read the audio file - even if FFmpeg aborted, the file might exist
+  // Read the audio file
   let audioData;
   try {
     audioData = await ffmpeg.readFile('audio.wav');
-    if (ffmpegAborted) {
-      console.log('[SubtitleEditor] Successfully recovered audio despite FFmpeg abort');
-    }
   } catch (e) {
     console.error('[SubtitleEditor] Failed to read audio file:', e);
-    if (ffmpegAborted) {
-      State.ffmpegLoaded = false;
-      State.ffmpeg = null;
-      throw new Error(`FFmpeg ran out of memory. Please try a smaller video file or refresh the page.`);
-    }
     throw new Error(`Failed to read extracted audio: ${e.message}`);
   }
   
@@ -533,12 +532,6 @@ async function extractAudioFromVideo(progressCallback, durationLimitSeconds = nu
     await ffmpeg.deleteFile('audio.wav');
   } catch (e) {
     console.warn('[SubtitleEditor] Could not delete audio file:', e);
-  }
-  
-  // Reset FFmpeg if it aborted
-  if (ffmpegAborted) {
-    State.ffmpegLoaded = false;
-    State.ffmpeg = null;
   }
   
   if (progressCallback) progressCallback(40, 'Audio extracted');
@@ -555,6 +548,15 @@ async function extractAudioFromLargeVideo(ffmpeg, progressCallback, durationLimi
     progressCallback(5, `Large file detected (${fileSizeMB}MB). Extracting first ${Math.round(durationLimitSeconds/60)} minutes...`);
   }
   
+  // Check hard limit - some files are just too large for browser processing
+  if (file.size > HARD_LIMIT_BYTES) {
+    throw new Error(
+      `This video file (${fileSizeMB}MB) is too large for browser-based processing. ` +
+      `Maximum supported size is approximately ${HARD_LIMIT_MB}MB. ` +
+      `Please use a desktop video editor or compress the video first.`
+    );
+  }
+  
   // For large files, we extract audio by reading a portion of the file
   // We estimate how much of the file we need based on duration
   // Typical video bitrate: ~5-10 Mbps, so 1 minute ≈ 40-80MB
@@ -563,11 +565,11 @@ async function extractAudioFromLargeVideo(ffmpeg, progressCallback, durationLimi
   // Use a very conservative estimate to avoid memory issues
   // FFmpeg.wasm has limited heap (~1-2GB), and we need room for:
   // - Input video data
-  // - Internal processing buffers
+  // - Internal processing buffers  
   // - Output audio data
-  // Cap at 400MB to leave plenty of headroom
-  const bytesPerMinute = 60 * 1024 * 1024; // 60MB per minute estimate
-  const maxInputBytes = 400 * 1024 * 1024; // Max 400MB input
+  // Cap at 250MB to leave plenty of headroom for FFmpeg's internal allocations
+  const bytesPerMinute = 50 * 1024 * 1024; // 50MB per minute estimate
+  const maxInputBytes = 250 * 1024 * 1024; // Max 250MB input
   const estimatedBytesNeeded = Math.min(
     (durationLimitSeconds / 60) * bytesPerMinute,
     maxInputBytes
@@ -640,18 +642,24 @@ async function extractAudioFromLargeVideo(ffmpeg, progressCallback, durationLimi
   ];
   
   // FFmpeg.wasm can abort during cleanup even if extraction succeeds
-  // We'll try to recover by reading the audio file anyway
-  let ffmpegAborted = false;
+  // IMPORTANT: If FFmpeg aborts, the WASM instance becomes completely unresponsive
+  // We cannot call ANY methods on it (deleteFile, readFile, etc.) - they will hang forever
   try {
     await ffmpeg.exec(ffmpegArgs);
   } catch (e) {
-    console.warn('[SubtitleEditor] FFmpeg exec error (may still have output):', e);
-    ffmpegAborted = true;
-    // Don't throw yet - the audio file might have been written successfully
+    // FFmpeg crashed - the WASM instance is now dead
+    console.error('[SubtitleEditor] FFmpeg crashed:', e);
+    State.ffmpegLoaded = false;
+    State.ffmpeg = null;
+    throw new Error(
+      `FFmpeg ran out of memory processing this large file (${fileSizeMB}MB). ` +
+      `This video is too large for in-browser processing. ` +
+      `Please try a shorter or lower-resolution video.`
+    );
   }
   
-  // IMPORTANT: Delete the input video BEFORE reading audio to free memory
-  // This prevents FFmpeg.wasm from running out of memory
+  // FFmpeg succeeded - now we can safely clean up
+  // Delete the input video BEFORE reading audio to free memory
   if (progressCallback) progressCallback(35, 'Freeing memory...');
   try {
     await ffmpeg.deleteFile('input.mp4');
@@ -659,28 +667,13 @@ async function extractAudioFromLargeVideo(ffmpeg, progressCallback, durationLimi
     console.warn('[SubtitleEditor] Could not delete input file:', e);
   }
   
-  // Now read the audio file (with input video memory freed)
-  // Even if FFmpeg aborted, the audio file might have been written
+  // Read the audio file
   if (progressCallback) progressCallback(37, 'Reading audio data...');
   let audioData;
   try {
     audioData = await ffmpeg.readFile('audio.wav');
-    if (ffmpegAborted) {
-      console.log('[SubtitleEditor] Successfully recovered audio despite FFmpeg abort');
-    }
   } catch (e) {
     console.error('[SubtitleEditor] Failed to read audio file:', e);
-    if (ffmpegAborted) {
-      // FFmpeg crashed and we couldn't recover the audio
-      // Need to reload FFmpeg for future operations
-      State.ffmpegLoaded = false;
-      State.ffmpeg = null;
-      throw new Error(
-        `FFmpeg ran out of memory processing this large file. ` +
-        `Please try with a shorter video or reduce quality. ` +
-        `Refreshing the page may also help.`
-      );
-    }
     throw new Error(`Failed to read extracted audio: ${e.message}`);
   }
   
@@ -689,13 +682,6 @@ async function extractAudioFromLargeVideo(ffmpeg, progressCallback, durationLimi
     await ffmpeg.deleteFile('audio.wav');
   } catch (e) {
     console.warn('[SubtitleEditor] Could not delete audio file:', e);
-  }
-  
-  // If FFmpeg aborted but we recovered, reset FFmpeg for future operations
-  if (ffmpegAborted) {
-    console.log('[SubtitleEditor] Resetting FFmpeg after abort recovery');
-    State.ffmpegLoaded = false;
-    State.ffmpeg = null;
   }
   
   if (progressCallback) progressCallback(40, 'Audio extracted');
