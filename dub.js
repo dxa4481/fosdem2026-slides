@@ -16,6 +16,7 @@
 const State = {
   videoFile: null,
   videoUrl: null,
+  videoData: null, // Store ArrayBuffer to avoid stale file references
   subtitles: [], // Array of {id, start, end, text}
   transcriber: null,
   isModelLoaded: false,
@@ -159,13 +160,16 @@ function handleVideoDrop(e) {
   }
 }
 
-function loadVideo(file) {
+async function loadVideo(file) {
   State.videoFile = file;
   
   // Revoke previous URL if exists
   if (State.videoUrl) {
     URL.revokeObjectURL(State.videoUrl);
   }
+  
+  // Store video data immediately to avoid stale file references
+  State.videoData = await file.arrayBuffer();
   
   State.videoUrl = URL.createObjectURL(file);
   DOM.videoPlayer.src = State.videoUrl;
@@ -186,6 +190,7 @@ function clearVideo() {
   }
   
   State.videoFile = null;
+  State.videoData = null;
   State.subtitles = [];
   State.currentSubtitleIndex = -1;
   
@@ -263,7 +268,7 @@ async function initWhisper(progressCallback) {
   }
 }
 
-async function extractAudioFromVideo(videoFile, progressCallback) {
+async function extractAudioFromVideo(progressCallback) {
   // Initialize FFmpeg if needed
   if (!State.ffmpegLoaded) {
     await initFFmpeg(progressCallback);
@@ -271,8 +276,8 @@ async function extractAudioFromVideo(videoFile, progressCallback) {
   
   const ffmpeg = State.ffmpeg;
   
-  // Write video to FFmpeg
-  const videoData = new Uint8Array(await videoFile.arrayBuffer());
+  // Write video to FFmpeg (use pre-loaded videoData to avoid stale file references)
+  const videoData = new Uint8Array(State.videoData);
   await ffmpeg.writeFile('input.mp4', videoData);
   
   if (progressCallback) progressCallback(30, 'Extracting audio...');
@@ -417,7 +422,7 @@ async function generateSubtitles() {
     
     // Extract audio from video
     updateLoading(30, 'Extracting audio from video...');
-    const audioData = await extractAudioFromVideo(State.videoFile, updateLoading);
+    const audioData = await extractAudioFromVideo(updateLoading);
     
     // Transcribe
     updateLoading(50, 'Transcribing with AI...');
@@ -929,8 +934,8 @@ async function exportVideo() {
     
     updateLoading(10, 'Preparing files...');
     
-    // Write video file
-    const videoData = new Uint8Array(await State.videoFile.arrayBuffer());
+    // Write video file (use pre-loaded videoData to avoid stale file references)
+    const videoData = new Uint8Array(State.videoData);
     await ffmpeg.writeFile('input.mp4', videoData);
     
     // Generate ASS subtitle file
