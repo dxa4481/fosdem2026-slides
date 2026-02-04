@@ -357,101 +357,132 @@ def burn_subtitles(video_path: str, ass_path: str, output_path: str) -> bool:
     Burn subtitles into video using FFmpeg with progress reporting.
     """
     print(f"\n🎬 Burning subtitles into video...")
-    print(f"   This may take a while for long videos...")
     
     # Get video duration for progress
     duration = get_video_duration(video_path)
     
-    # Escape the ASS path for FFmpeg filter
-    ass_escaped = ass_path.replace('\\', '/').replace(':', r'\:').replace("'", r"\'")
+    # Copy ASS file to a visible location for debugging
+    video_dir = Path(video_path).parent
+    debug_ass_path = video_dir / "debug_subtitles.ass"
+    shutil.copy(ass_path, debug_ass_path)
+    print(f"   📄 ASS file saved to: {debug_ass_path}")
     
     cmd = [
         'ffmpeg', '-y',
         '-i', video_path,
-        '-vf', f"ass='{ass_escaped}'",
+        '-vf', f"ass={ass_path}",
         '-c:a', 'copy',
         '-c:v', 'libx264',
-        '-preset', 'fast',  # Faster encoding
+        '-preset', 'fast',
         '-crf', '23',
         output_path
     ]
     
-    print(f"   Running FFmpeg (check Activity Monitor if it seems stuck)...")
+    # Print command for manual debugging
+    print(f"\n   To run manually with full output:")
+    print(f"   {' '.join(cmd)}\n")
     
     try:
-        # Use simpler subprocess call - progress parsing can cause hangs
-        # For long videos, just let it run and show a spinner
-        import select
-        
+        # Run FFmpeg and stream stderr to terminal in real-time
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            bufsize=1,
         )
         
-        # Read stderr in a non-blocking way to prevent buffer deadlock
-        # and show periodic progress
+        # Use threads to read both stdout and stderr without blocking
+        import queue
+        from threading import Thread
+        
+        stderr_queue = queue.Queue()
+        
+        def read_stderr():
+            for line in iter(process.stderr.readline, b''):
+                stderr_queue.put(line)
+            process.stderr.close()
+        
+        stderr_thread = Thread(target=read_stderr, daemon=True)
+        stderr_thread.start()
+        
         start_time = time.time()
-        last_update = 0
-        stderr_data = []
+        last_progress_time = 0
+        last_video_time = 0
+        stall_count = 0
         
         while process.poll() is None:
-            # Check if there's data to read from stderr
+            # Read any available stderr
             try:
-                # Use select with timeout to avoid blocking
-                import selectors
-                sel = selectors.DefaultSelector()
-                sel.register(process.stderr, selectors.EVENT_READ)
-                ready = sel.select(timeout=1.0)
-                sel.close()
-                
-                if ready:
-                    chunk = process.stderr.read1(4096) if hasattr(process.stderr, 'read1') else process.stderr.read(4096)
-                    if chunk:
-                        stderr_data.append(chunk)
-                        # Try to parse time from FFmpeg stderr
-                        text = chunk.decode('utf-8', errors='ignore')
-                        if 'time=' in text:
-                            try:
-                                time_match = text.split('time=')[1].split()[0]
-                                parts = time_match.split(':')
-                                if len(parts) == 3:
-                                    h, m, s = parts
-                                    current = int(h) * 3600 + int(m) * 60 + float(s)
-                                    if duration > 0:
-                                        pct = min(100, (current / duration) * 100)
-                                        elapsed = time.time() - start_time
-                                        print(f"\r   Encoding: {pct:.1f}% ({int(current)}s / {int(duration)}s) - elapsed: {int(elapsed)}s   ", end='', flush=True)
-                            except:
-                                pass
-            except:
-                time.sleep(0.5)
+                while True:
+                    line = stderr_queue.get_nowait()
+                    text = line.decode('utf-8', errors='ignore').strip()
+                    
+                    # Parse progress
+                    if 'time=' in text:
+                        try:
+                            time_match = text.split('time=')[1].split()[0]
+                            parts = time_match.split(':')
+                            if len(parts) == 3:
+                                h, m, s = parts
+                                current = int(h) * 3600 + int(m) * 60 + float(s)
+                                
+                                # Check for stall
+                                if current == last_video_time:
+                                    stall_count += 1
+                                    if stall_count > 30:  # 30 seconds without progress
+                                        print(f"\n\n   ⚠️  FFmpeg appears stalled at {current:.1f}s ({current/duration*100:.1f}%)")
+                                        print(f"   This might be a problematic section of the video.")
+                                        print(f"   Last FFmpeg output: {text}")
+                                else:
+                                    stall_count = 0
+                                    last_video_time = current
+                                
+                                if duration > 0:
+                                    pct = min(100, (current / duration) * 100)
+                                    elapsed = time.time() - start_time
+                                    # Estimate remaining time
+                                    if current > 0:
+                                        eta = (elapsed / current) * (duration - current)
+                                        eta_str = f"ETA: {int(eta//60)}m{int(eta%60)}s"
+                                    else:
+                                        eta_str = ""
+                                    print(f"\r   Encoding: {pct:.1f}% | {int(current)}s / {int(duration)}s | elapsed: {int(elapsed//60)}m{int(elapsed%60)}s {eta_str}      ", end='', flush=True)
+                                    last_progress_time = time.time()
+                        except:
+                            pass
+                    
+                    # Show errors immediately
+                    if 'error' in text.lower() or 'failed' in text.lower():
+                        print(f"\n   ❌ {text}")
+                        
+            except queue.Empty:
+                pass
             
-            # Show we're still alive every 10 seconds
-            elapsed = time.time() - start_time
-            if elapsed - last_update > 10:
-                last_update = elapsed
-                if duration > 0:
-                    print(f"\r   Encoding in progress... elapsed: {int(elapsed)}s   ", end='', flush=True)
+            # Check for overall stall (no output at all)
+            if time.time() - last_progress_time > 60 and last_progress_time > 0:
+                print(f"\n   ⚠️  No progress for 60 seconds. FFmpeg might be stuck.")
+                print(f"   You can check CPU usage or kill and retry.")
+            
+            time.sleep(1)
         
-        # Get final status
-        process.wait()
+        # Wait for stderr thread to finish
+        stderr_thread.join(timeout=5)
+        
         print()  # New line after progress
         
         if process.returncode != 0:
-            stderr_text = b''.join(stderr_data).decode('utf-8', errors='ignore')
-            print(f"   FFmpeg error (code {process.returncode}):")
-            # Show last few lines of error
-            lines = stderr_text.strip().split('\n')
-            for line in lines[-10:]:
-                print(f"   {line}")
+            print(f"\n   ❌ FFmpeg failed with code {process.returncode}")
+            print(f"   Check the ASS file at: {debug_ass_path}")
+            print(f"   Try running the command above manually to see full error.")
             return False
         
         print(f"   ✅ Output saved to: {output_path}")
+        # Clean up debug file on success
+        debug_ass_path.unlink(missing_ok=True)
         return True
         
     except Exception as e:
-        print(f"   Error: {e}")
+        print(f"\n   Error: {e}")
         import traceback
         traceback.print_exc()
         return False
