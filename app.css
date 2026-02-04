@@ -1850,6 +1850,20 @@ body.present-mode #controls {
   border-color: #10b981;
 }
 
+/* Dub Video link in toolbar */
+.toolbar-btn.dub-link {
+  background: rgba(245, 158, 11, 0.2);
+  border-color: rgba(245, 158, 11, 0.4);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+.toolbar-btn.dub-link:hover {
+  background: #f59e0b;
+  border-color: #f59e0b;
+}
+
 /* Subtitle Settings Editor Panel */
 #subtitle-settings-editor {
   flex: 1;
