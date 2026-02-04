@@ -478,9 +478,11 @@
       
       <div id="status" class="status" style="display: none;"></div>
       
-      <div class="action-bar">
-        <button id="export-json" class="btn btn-secondary" title="Save with word timing (can reload later)">Save JSON</button>
-        <button id="export-srt" class="btn btn-secondary" title="Export SRT (loses word timing)">Export SRT</button>
+      <div class="action-bar" style="flex-wrap: wrap;">
+        <input type="file" id="import-json-input" accept=".json" style="display: none;">
+        <button id="import-json" class="btn btn-secondary" title="Load previous transcription">Load JSON</button>
+        <button id="export-json" class="btn btn-secondary" title="Save with word timing">Save JSON</button>
+        <button id="export-srt" class="btn btn-secondary" title="Export SRT (no word timing)">SRT</button>
         <button id="approve-btn" class="btn btn-primary">Burn Subtitles</button>
       </div>
     </div>
@@ -750,6 +752,52 @@
     video.addEventListener('play', updateSubtitleDisplay);
     video.addEventListener('seeked', updateSubtitleDisplay);
 
+    // Import JSON
+    document.getElementById('import-json').addEventListener('click', () => {
+      document.getElementById('import-json-input').click();
+    });
+    
+    document.getElementById('import-json-input').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      
+      try {
+        const text = await file.text();
+        const data = JSON.parse(text);
+        
+        if (!data.subtitles) {
+          alert('Invalid JSON file - missing subtitles');
+          return;
+        }
+        
+        subtitles = data.subtitles;
+        if (data.settings) {
+          settings = { ...settings, ...data.settings };
+          // Update UI controls
+          fontSizeInput.value = settings.font_size;
+          fontSizeValue.textContent = settings.font_size + 'px';
+          positionSelect.value = settings.position;
+          if (settings.highlight_color) highlightColorSelect.value = settings.highlight_color;
+          if (settings.text_color) textColorSelect.value = settings.text_color;
+          updateSubtitleStyle();
+        }
+        
+        renderSubtitleList();
+        subtitleCount.textContent = `${subtitles.length} segments`;
+        showStatus(`Loaded ${subtitles.length} subtitles from ${file.name}`, 'success');
+        
+        // Reset button state
+        approveBtn.disabled = false;
+        approveBtn.textContent = 'Burn Subtitles';
+        
+      } catch (err) {
+        alert('Failed to parse JSON: ' + err.message);
+      }
+      
+      // Clear the input so same file can be selected again
+      e.target.value = '';
+    });
+
     // Export JSON (with word timing)
     document.getElementById('export-json').addEventListener('click', () => {
       window.location.href = '/api/export-json';
@@ -777,7 +825,8 @@
         
         if (result.status === 'ok') {
           showStatus(`Done! Video saved to: ${result.output}`, 'success');
-          approveBtn.textContent = 'Complete!';
+          approveBtn.textContent = 'Burn Again';
+          approveBtn.disabled = false;  // Allow re-export with different settings
         } else {
           throw new Error(result.message || 'Export failed');
         }

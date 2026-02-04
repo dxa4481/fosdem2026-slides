@@ -242,12 +242,12 @@ def generate_ass_subtitles(subtitles: list, settings: dict, video_width: int = 1
     text_color = settings.get('text_color', 'white')
     highlight_color = settings.get('highlight_color', '#fbbf24')
     
-    # Scale font size relative to 1080p - the preview is designed for screen display
-    # ASS font sizes are absolute, so we need to scale based on video resolution
-    scale_factor = video_height / 1080
-    scaled_font_size = int(font_size * scale_factor)
+    # ASS uses PlayRes as virtual coordinates - font size is relative to PlayResY
+    # We use 1080 as reference, matching typical screen display
+    play_res_x = 1920
+    play_res_y = 1080
     
-    # Convert hex color to ASS BGR format (with alpha prefix)
+    # Convert hex color to ASS BGR format: &HAABBGGRR (AA=alpha, 00=opaque, FF=transparent)
     def hex_to_ass(hex_color, alpha='00'):
         if hex_color.startswith('#'):
             hex_color = hex_color[1:]
@@ -268,37 +268,34 @@ def generate_ass_subtitles(subtitles: list, settings: dict, video_width: int = 1
     # Position: 2=bottom center, 5=middle center, 8=top center
     alignment = {'bottom': 2, 'middle': 5, 'top': 8}.get(position, 2)
     
-    # Vertical margin based on position (scaled)
-    margin_v = int(50 * scale_factor) if position in ('bottom', 'top') else 0
+    # Vertical margin
+    margin_v = 50 if position in ('bottom', 'top') else 0
     
     primary_color = color_name_to_ass(text_color)
     highlight_color_ass = hex_to_ass(highlight_color)
     
-    # Dimmed color for upcoming words (60% opacity = alpha A0)
-    dim_color = color_name_to_ass(text_color, 'A0')
+    # Dimmed color for upcoming words
+    dim_color = color_name_to_ass(text_color, '70')  # 70 = ~44% transparent
     
-    # Semi-transparent black background (B0 = ~70% opacity)
-    back_color = '&HB0000000'
+    # Background box color: semi-transparent black
+    # Using BorderStyle 3 (opaque box) with OutlineColour as the box color
+    # Alpha 80 = 50% transparent (80 hex = 128 decimal, 128/255 = 50%)
+    box_color = '&H80000000'  # Semi-transparent black
     
-    # Style breakdown:
-    # - BorderStyle 4 = shadow + background box drawn behind text
-    # - Outline 0 = no character outline
-    # - Shadow 0 = no drop shadow (we don't want the offset shadow)
-    # - BackColour with alpha gives us the semi-transparent box
-    # 
-    # Actually, BorderStyle 3 = opaque box is better for our case
-    # We use it with a semi-transparent BackColour
-    
+    # Style explanation:
+    # - BorderStyle 3 = opaque box behind text (uses OutlineColour for box)
+    # - Outline 12 = padding around text (box extends this far)
+    # - Shadow 0 = no drop shadow
     ass_content = f"""[Script Info]
 Title: Video Subtitles
 ScriptType: v4.00+
-PlayResX: {video_width}
-PlayResY: {video_height}
+PlayResX: {play_res_x}
+PlayResY: {play_res_y}
 ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,{scaled_font_size},{primary_color},&H000000FF,&H00000000,{back_color},1,0,0,0,100,100,0,0,3,0,0,{alignment},20,20,{margin_v},1
+Style: Default,Arial,{font_size},{primary_color},&H000000FF,{box_color},{box_color},1,0,0,0,100,100,0,0,3,12,0,{alignment},20,20,{margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
