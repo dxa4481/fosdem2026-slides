@@ -4,6 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Video Subtitle Editor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700&display=swap" rel="stylesheet">
   <style>
     * {
       margin: 0;
@@ -53,21 +56,24 @@
       max-height: 100%;
       display: block;
       background: black;
+      border-radius: 8px;
     }
 
+    /* Subtitle Overlay - Matching Presenter Mode */
     .subtitle-overlay {
       position: absolute;
       left: 0;
       right: 0;
       display: flex;
       justify-content: center;
-      padding: 20px;
+      padding: 30px 20px;
       pointer-events: none;
-      transition: all 0.2s;
+      transition: all 0.3s ease;
     }
 
     .subtitle-overlay.bottom {
-      bottom: 60px;
+      bottom: 0;
+      background: linear-gradient(to top, rgba(0, 0, 0, 0.7) 0%, transparent 100%);
     }
 
     .subtitle-overlay.middle {
@@ -76,73 +82,116 @@
     }
 
     .subtitle-overlay.top {
-      top: 20px;
+      top: 0;
+      background: linear-gradient(to bottom, rgba(0, 0, 0, 0.7) 0%, transparent 100%);
     }
 
     .subtitle-text {
-      background: rgba(0, 0, 0, 0.7);
-      padding: 8px 16px;
-      border-radius: 4px;
+      font-family: 'Montserrat', 'Segoe UI', -apple-system, sans-serif;
+      font-weight: 700;
+      color: white;
       text-align: center;
+      line-height: 1.3;
+      letter-spacing: 0.02em;
+      padding: 16px 24px;
       max-width: 90%;
-      text-shadow: 2px 2px 2px rgba(0,0,0,0.8);
+      text-shadow: 
+        0 0 20px rgba(0, 0, 0, 0.9),
+        0 0 40px rgba(0, 0, 0, 0.7),
+        0 4px 8px rgba(0, 0, 0, 0.8);
     }
 
     .subtitle-text .word {
-      display: inline;
-      transition: color 0.1s;
+      display: inline-block;
+      transition: all 0.15s ease;
+      margin: 0 0.12em;
     }
 
-    .subtitle-text .word.highlight {
-      color: yellow;
+    /* Current word - yellow with glow */
+    .subtitle-text .word.current {
+      color: #fbbf24;
+      transform: scale(1.1);
+      text-shadow: 
+        0 0 20px rgba(251, 191, 36, 0.8),
+        0 0 40px rgba(251, 191, 36, 0.5),
+        0 4px 8px rgba(0, 0, 0, 0.8);
     }
 
-    .controls-bar {
-      background: #16213e;
-      padding: 15px 20px;
-      border-top: 1px solid rgba(255,255,255,0.1);
+    /* Already spoken words */
+    .subtitle-text .word.spoken {
+      color: rgba(255, 255, 255, 0.95);
     }
 
-    .settings-row {
-      display: flex;
-      gap: 20px;
-      flex-wrap: wrap;
-      align-items: center;
+    /* Upcoming words - slightly dimmed */
+    .subtitle-text .word.upcoming {
+      color: rgba(255, 255, 255, 0.6);
+    }
+
+    /* Settings Panel */
+    .settings-panel {
+      background: linear-gradient(135deg, #1e3a5f 0%, #16213e 100%);
+      border-top: 1px solid rgba(139, 92, 246, 0.3);
+      padding: 16px 20px;
+    }
+
+    .settings-title {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: #a78bfa;
+      margin-bottom: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .settings-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 16px;
     }
 
     .setting-group {
       display: flex;
-      align-items: center;
-      gap: 8px;
+      flex-direction: column;
+      gap: 6px;
     }
 
     .setting-group label {
-      font-size: 0.85rem;
+      font-size: 0.8rem;
       color: rgba(255,255,255,0.7);
     }
 
-    select, input[type="range"] {
-      background: rgba(255,255,255,0.1);
+    .setting-group select,
+    .setting-group input[type="range"] {
+      background: rgba(0, 0, 0, 0.3);
       border: 1px solid rgba(255,255,255,0.2);
       color: white;
-      padding: 6px 10px;
-      border-radius: 4px;
+      padding: 8px 12px;
+      border-radius: 6px;
       font-size: 0.9rem;
+      width: 100%;
     }
 
-    select:focus, input:focus {
+    .setting-group select:focus,
+    .setting-group input:focus {
       outline: none;
       border-color: #8b5cf6;
     }
 
-    input[type="range"] {
-      width: 120px;
+    .setting-group input[type="range"] {
       padding: 0;
+      height: 36px;
+      cursor: pointer;
+    }
+
+    .setting-value {
+      font-size: 0.85rem;
+      color: #a78bfa;
+      font-weight: 600;
     }
 
     /* Right panel - Editor */
     .editor-panel {
-      width: 400px;
+      width: 420px;
       background: #16213e;
       display: flex;
       flex-direction: column;
@@ -150,7 +199,7 @@
     }
 
     .editor-header {
-      padding: 15px 20px;
+      padding: 16px 20px;
       background: #1a1a2e;
       border-bottom: 1px solid rgba(255,255,255,0.1);
       display: flex;
@@ -163,48 +212,58 @@
       font-weight: 600;
     }
 
+    .subtitle-count {
+      font-size: 0.85rem;
+      color: rgba(255,255,255,0.6);
+      background: rgba(139, 92, 246, 0.15);
+      padding: 4px 10px;
+      border-radius: 12px;
+    }
+
     .subtitle-list {
       flex: 1;
       overflow-y: auto;
-      padding: 10px;
+      padding: 12px;
     }
 
     .subtitle-item {
       background: rgba(0,0,0,0.2);
       border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 8px;
-      padding: 12px;
+      border-radius: 10px;
+      padding: 14px;
       margin-bottom: 10px;
       cursor: pointer;
       transition: all 0.2s;
     }
 
     .subtitle-item:hover {
-      border-color: rgba(139, 92, 246, 0.5);
+      border-color: rgba(139, 92, 246, 0.4);
+      background: rgba(139, 92, 246, 0.05);
     }
 
     .subtitle-item.active {
       border-color: #8b5cf6;
-      background: rgba(139, 92, 246, 0.1);
+      background: rgba(139, 92, 246, 0.15);
     }
 
     .subtitle-time {
       font-family: 'SF Mono', Monaco, monospace;
       font-size: 0.75rem;
       color: #8b5cf6;
-      margin-bottom: 6px;
+      margin-bottom: 8px;
     }
 
     .subtitle-text-edit {
       width: 100%;
       background: rgba(0,0,0,0.3);
       border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 4px;
+      border-radius: 6px;
       color: white;
-      padding: 8px;
+      padding: 10px;
       font-size: 0.9rem;
       resize: none;
       font-family: inherit;
+      line-height: 1.4;
     }
 
     .subtitle-text-edit:focus {
@@ -213,7 +272,7 @@
     }
 
     .subtitle-words {
-      margin-top: 8px;
+      margin-top: 10px;
       display: flex;
       flex-wrap: wrap;
       gap: 4px;
@@ -221,20 +280,27 @@
 
     .word-chip {
       font-size: 0.7rem;
-      background: rgba(139, 92, 246, 0.2);
-      padding: 2px 6px;
-      border-radius: 3px;
-      color: rgba(255,255,255,0.8);
+      background: rgba(255, 255, 255, 0.1);
+      padding: 3px 7px;
+      border-radius: 4px;
+      color: rgba(255,255,255,0.7);
+      transition: all 0.15s;
     }
 
-    .word-chip.highlight {
-      background: rgba(255, 255, 0, 0.3);
-      color: yellow;
+    .word-chip.current {
+      background: rgba(251, 191, 36, 0.3);
+      color: #fbbf24;
+      transform: scale(1.05);
+    }
+
+    .word-chip.spoken {
+      background: rgba(139, 92, 246, 0.2);
+      color: rgba(255,255,255,0.9);
     }
 
     /* Action buttons */
     .action-bar {
-      padding: 15px 20px;
+      padding: 16px 20px;
       background: #1a1a2e;
       border-top: 1px solid rgba(255,255,255,0.1);
       display: flex;
@@ -242,11 +308,11 @@
     }
 
     .btn {
-      padding: 10px 20px;
+      padding: 12px 20px;
       border: none;
-      border-radius: 6px;
+      border-radius: 8px;
       font-size: 0.9rem;
-      font-weight: 500;
+      font-weight: 600;
       cursor: pointer;
       transition: all 0.2s;
     }
@@ -258,14 +324,15 @@
     }
 
     .btn-primary:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(139, 92, 246, 0.4);
     }
 
     .btn-primary:disabled {
       opacity: 0.5;
       cursor: not-allowed;
       transform: none;
+      box-shadow: none;
     }
 
     .btn-secondary {
@@ -280,11 +347,14 @@
 
     /* Status messages */
     .status {
-      padding: 10px 20px;
-      background: rgba(139, 92, 246, 0.2);
-      color: #a78bfa;
+      padding: 12px 20px;
       font-size: 0.85rem;
       text-align: center;
+    }
+
+    .status.info {
+      background: rgba(139, 92, 246, 0.2);
+      color: #a78bfa;
     }
 
     .status.success {
@@ -302,7 +372,7 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      gap: 10px;
+      gap: 12px;
       padding: 40px;
       color: rgba(255,255,255,0.6);
     }
@@ -318,6 +388,20 @@
 
     @keyframes spin {
       to { transform: rotate(360deg); }
+    }
+
+    /* Responsive */
+    @media (max-width: 900px) {
+      .container {
+        flex-direction: column;
+      }
+      .editor-panel {
+        width: 100%;
+        max-height: 50vh;
+      }
+      .settings-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
     }
   </style>
 </head>
@@ -336,16 +420,18 @@
         </div>
       </div>
       
-      <div class="controls-bar">
-        <div class="settings-row">
+      <!-- Settings Panel - Prominent placement -->
+      <div class="settings-panel">
+        <div class="settings-title">Subtitle Settings</div>
+        <div class="settings-grid">
           <div class="setting-group">
-            <label>Font Size:</label>
-            <input type="range" id="font-size" min="24" max="96" value="48">
-            <span id="font-size-value">48px</span>
+            <label>Font Size</label>
+            <input type="range" id="font-size" min="24" max="72" value="42">
+            <span class="setting-value" id="font-size-value">42px</span>
           </div>
           
           <div class="setting-group">
-            <label>Position:</label>
+            <label>Position</label>
             <select id="position">
               <option value="bottom">Bottom</option>
               <option value="middle">Middle</option>
@@ -354,18 +440,21 @@
           </div>
           
           <div class="setting-group">
-            <label>Font Color:</label>
-            <select id="font-color">
-              <option value="white">White</option>
-              <option value="yellow">Yellow</option>
+            <label>Highlight Color</label>
+            <select id="highlight-color">
+              <option value="#fbbf24">Yellow (default)</option>
+              <option value="#f472b6">Pink</option>
+              <option value="#34d399">Green</option>
+              <option value="#60a5fa">Blue</option>
+              <option value="#ffffff">White</option>
             </select>
           </div>
           
           <div class="setting-group">
-            <label>Outline:</label>
-            <select id="outline-color">
-              <option value="black">Black</option>
-              <option value="none">None</option>
+            <label>Text Color</label>
+            <select id="text-color">
+              <option value="white">White</option>
+              <option value="#e2e8f0">Light Gray</option>
             </select>
           </div>
         </div>
@@ -376,7 +465,7 @@
     <div class="editor-panel">
       <div class="editor-header">
         <h2>Subtitles</h2>
-        <span id="subtitle-count">0 segments</span>
+        <span class="subtitle-count" id="subtitle-count">0 segments</span>
       </div>
       
       <div id="subtitle-list" class="subtitle-list">
@@ -390,7 +479,7 @@
       
       <div class="action-bar">
         <button id="export-srt" class="btn btn-secondary">Export SRT</button>
-        <button id="approve-btn" class="btn btn-primary">Approve & Export Video</button>
+        <button id="approve-btn" class="btn btn-primary">Burn Subtitles</button>
       </div>
     </div>
   </div>
@@ -399,10 +488,10 @@
     // State
     let subtitles = [];
     let settings = {
-      font_size: 48,
+      font_size: 42,
       position: 'bottom',
-      font_color: 'white',
-      outline_color: 'black',
+      highlight_color: '#fbbf24',
+      text_color: 'white',
     };
     let currentSubtitleIndex = -1;
     let currentWordIndex = -1;
@@ -416,8 +505,8 @@
     const fontSizeInput = document.getElementById('font-size');
     const fontSizeValue = document.getElementById('font-size-value');
     const positionSelect = document.getElementById('position');
-    const fontColorSelect = document.getElementById('font-color');
-    const outlineColorSelect = document.getElementById('outline-color');
+    const highlightColorSelect = document.getElementById('highlight-color');
+    const textColorSelect = document.getElementById('text-color');
     const approveBtn = document.getElementById('approve-btn');
     const exportSrtBtn = document.getElementById('export-srt');
     const statusEl = document.getElementById('status');
@@ -429,14 +518,18 @@
         const data = await response.json();
         
         subtitles = data.subtitles;
-        settings = data.settings;
         
-        // Update UI
+        // Merge server settings with defaults
+        if (data.settings) {
+          settings = { ...settings, ...data.settings };
+        }
+        
+        // Update UI controls
         fontSizeInput.value = settings.font_size;
         fontSizeValue.textContent = settings.font_size + 'px';
         positionSelect.value = settings.position;
-        fontColorSelect.value = settings.font_color;
-        outlineColorSelect.value = settings.outline_color;
+        if (settings.highlight_color) highlightColorSelect.value = settings.highlight_color;
+        if (settings.text_color) textColorSelect.value = settings.text_color;
         
         renderSubtitleList();
         updateSubtitleStyle();
@@ -485,7 +578,6 @@
         const textarea = item.querySelector('textarea');
         textarea.addEventListener('input', (e) => {
           subtitles[index].text = e.target.value;
-          // Note: editing text breaks word-level sync, but that's expected
         });
         
         subtitleList.appendChild(item);
@@ -512,7 +604,7 @@
         subtitleText.style.display = 'none';
         currentSubtitleIndex = -1;
         currentWordIndex = -1;
-        updateActiveSubtitleInList(-1);
+        updateActiveSubtitleInList(-1, -1);
         return;
       }
       
@@ -521,7 +613,6 @@
       // Update active subtitle in list
       if (foundIndex !== currentSubtitleIndex) {
         currentSubtitleIndex = foundIndex;
-        updateActiveSubtitleInList(foundIndex);
         
         // Scroll into view
         const activeItem = subtitleList.querySelector(`[data-index="${foundIndex}"]`);
@@ -533,76 +624,87 @@
       // Render with word highlighting
       const words = foundSub.words || [];
       if (words.length === 0) {
-        // No word timing - just show text
-        subtitleText.textContent = foundSub.text;
+        subtitleText.innerHTML = `<span class="word current">${foundSub.text}</span>`;
+        updateActiveSubtitleInList(foundIndex, -1);
         return;
       }
       
-      // Find current word
+      // Find current word based on time
       let activeWordIndex = -1;
       for (let i = 0; i < words.length; i++) {
-        if (time >= words[i].start && time <= words[i].end) {
+        if (time >= words[i].start && time < words[i].end) {
           activeWordIndex = i;
           break;
         }
-        // If between words, highlight the previous one briefly
-        if (i > 0 && time > words[i-1].end && time < words[i].start) {
-          activeWordIndex = i - 1;
+        // If we're past this word but before the next, still highlight this word
+        if (time >= words[i].end && (i === words.length - 1 || time < words[i + 1].start)) {
+          activeWordIndex = i;
           break;
         }
       }
       
-      // If past all words but still in subtitle, highlight last word
-      if (activeWordIndex === -1 && time > words[words.length - 1].end) {
-        activeWordIndex = words.length - 1;
+      // If before first word, highlight first
+      if (activeWordIndex === -1 && time < words[0].start) {
+        activeWordIndex = 0;
       }
       
-      // Build HTML with word highlighting
+      // Build HTML with proper word classes
+      const highlightColor = settings.highlight_color || '#fbbf24';
       let html = words.map((w, i) => {
-        const isActive = i === activeWordIndex;
-        return `<span class="word${isActive ? ' highlight' : ''}">${w.word}</span>`;
+        let className = 'word';
+        let style = '';
+        
+        if (i === activeWordIndex) {
+          className += ' current';
+          style = `color: ${highlightColor}; text-shadow: 0 0 20px ${highlightColor}80, 0 0 40px ${highlightColor}50, 0 4px 8px rgba(0,0,0,0.8);`;
+        } else if (i < activeWordIndex) {
+          className += ' spoken';
+        } else {
+          className += ' upcoming';
+        }
+        
+        return `<span class="${className}" style="${style}">${w.word}</span>`;
       }).join(' ');
       
       subtitleText.innerHTML = html;
       
       // Update word chips in list
-      if (activeWordIndex !== currentWordIndex) {
-        currentWordIndex = activeWordIndex;
-        updateWordHighlightInList(foundIndex, activeWordIndex);
-      }
+      updateActiveSubtitleInList(foundIndex, activeWordIndex);
     }
 
-    // Update active subtitle in list
-    function updateActiveSubtitleInList(index) {
+    // Update active subtitle and word in list
+    function updateActiveSubtitleInList(subIndex, wordIndex) {
+      // Update subtitle items
       document.querySelectorAll('.subtitle-item').forEach((item, i) => {
-        item.classList.toggle('active', i === index);
+        item.classList.toggle('active', i === subIndex);
       });
-    }
-
-    // Update word highlight in list
-    function updateWordHighlightInList(subIndex, wordIndex) {
-      const wordsContainer = subtitleList.querySelector(`.subtitle-words[data-index="${subIndex}"]`);
-      if (!wordsContainer) return;
       
-      wordsContainer.querySelectorAll('.word-chip').forEach((chip, i) => {
-        chip.classList.toggle('highlight', i === wordIndex);
+      // Update word chips
+      document.querySelectorAll('.word-chip').forEach(chip => {
+        chip.classList.remove('current', 'spoken');
       });
+      
+      if (subIndex >= 0) {
+        const wordsContainer = subtitleList.querySelector(`.subtitle-words[data-index="${subIndex}"]`);
+        if (wordsContainer) {
+          wordsContainer.querySelectorAll('.word-chip').forEach((chip, i) => {
+            if (i === wordIndex) {
+              chip.classList.add('current');
+            } else if (i < wordIndex) {
+              chip.classList.add('spoken');
+            }
+          });
+        }
+      }
     }
 
     // Update subtitle styling
     function updateSubtitleStyle() {
       subtitleText.style.fontSize = settings.font_size + 'px';
-      subtitleText.style.color = settings.font_color;
+      subtitleText.style.color = settings.text_color;
       
       // Position
       subtitleOverlay.className = 'subtitle-overlay ' + settings.position;
-      
-      // Outline
-      if (settings.outline_color === 'none') {
-        subtitleText.style.textShadow = 'none';
-      } else {
-        subtitleText.style.textShadow = `2px 2px 2px ${settings.outline_color}, -2px -2px 2px ${settings.outline_color}, 2px -2px 2px ${settings.outline_color}, -2px 2px 2px ${settings.outline_color}`;
-      }
     }
 
     // Settings change handlers
@@ -617,18 +719,29 @@
       updateSubtitleStyle();
     });
 
-    fontColorSelect.addEventListener('change', () => {
-      settings.font_color = fontColorSelect.value;
+    highlightColorSelect.addEventListener('change', () => {
+      settings.highlight_color = highlightColorSelect.value;
+      updateSubtitleDisplay(); // Re-render to apply new color
+    });
+
+    textColorSelect.addEventListener('change', () => {
+      settings.text_color = textColorSelect.value;
       updateSubtitleStyle();
     });
 
-    outlineColorSelect.addEventListener('change', () => {
-      settings.outline_color = outlineColorSelect.value;
-      updateSubtitleStyle();
+    // Video time update - use requestAnimationFrame for smoother updates
+    let lastUpdateTime = 0;
+    video.addEventListener('timeupdate', () => {
+      const now = performance.now();
+      if (now - lastUpdateTime > 50) { // Update max 20fps
+        lastUpdateTime = now;
+        updateSubtitleDisplay();
+      }
     });
-
-    // Video time update
-    video.addEventListener('timeupdate', updateSubtitleDisplay);
+    
+    // Also update on play to catch immediate changes
+    video.addEventListener('play', updateSubtitleDisplay);
+    video.addEventListener('seeked', updateSubtitleDisplay);
 
     // Export SRT
     exportSrtBtn.addEventListener('click', () => {
@@ -638,8 +751,8 @@
     // Approve and export
     approveBtn.addEventListener('click', async () => {
       approveBtn.disabled = true;
-      approveBtn.textContent = 'Exporting...';
-      showStatus('Burning subtitles into video...', 'info');
+      approveBtn.textContent = 'Encoding video...';
+      showStatus('Burning subtitles into video (this may take a few minutes)...', 'info');
       
       try {
         const response = await fetch('/api/approve', {
@@ -651,15 +764,15 @@
         const result = await response.json();
         
         if (result.status === 'ok') {
-          showStatus(`Video saved to: ${result.output}`, 'success');
-          approveBtn.textContent = 'Done!';
+          showStatus(`Done! Video saved to: ${result.output}`, 'success');
+          approveBtn.textContent = 'Complete!';
         } else {
           throw new Error(result.message || 'Export failed');
         }
       } catch (error) {
         showStatus('Export failed: ' + error.message, 'error');
         approveBtn.disabled = false;
-        approveBtn.textContent = 'Approve & Export Video';
+        approveBtn.textContent = 'Burn Subtitles';
       }
     });
 
