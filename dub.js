@@ -17,6 +17,7 @@ const State = {
   videoFile: null,
   videoUrl: null,
   videoData: null, // Store ArrayBuffer to avoid stale file references
+  useLargeFileMode: false, // Use streaming for large files
   subtitles: [], // Array of {id, start, end, text}
   transcriber: null,
   isModelLoaded: false,
@@ -177,18 +178,94 @@ async function loadVideo(file) {
   DOM.videoContainer.style.display = 'flex';
   DOM.videoControls.style.display = 'flex';
   
-  // Pre-load video data in background (for FFmpeg processing later)
-  // We do this after showing the UI so the user sees immediate feedback
-  try {
-    State.videoData = await file.arrayBuffer();
-    console.log('[SubtitleEditor] Video loaded and cached:', file.name, '(' + Math.round(State.videoData.byteLength / 1024 / 1024) + ' MB)');
-  } catch (e) {
-    console.warn('[SubtitleEditor] Could not pre-cache video data, will retry when needed:', e.message);
+  // For large files (>500MB), we'll use streaming approach instead of loading all into memory
+  const fileSizeMB = file.size / (1024 * 1024);
+  console.log('[SubtitleEditor] Video file size:', Math.round(fileSizeMB), 'MB');
+  
+  if (fileSizeMB > 500) {
+    // Large file - we'll stream directly to FFmpeg when needed
+    console.log('[SubtitleEditor] Large file detected, will use streaming approach');
     State.videoData = null;
+    State.useLargeFileMode = true;
+  } else {
+    // Smaller file - try to pre-cache for faster access
+    State.useLargeFileMode = false;
+    try {
+      State.videoData = await file.arrayBuffer();
+      console.log('[SubtitleEditor] Video loaded and cached:', file.name, '(' + Math.round(State.videoData.byteLength / 1024 / 1024) + ' MB)');
+    } catch (e) {
+      console.warn('[SubtitleEditor] Could not pre-cache video data, will use streaming:', e.message);
+      State.videoData = null;
+      State.useLargeFileMode = true;
+    }
   }
 }
 
-// Ensure video data is loaded (retry if needed)
+// Write file to FFmpeg filesystem using streaming for large files
+async function writeVideoToFFmpeg(ffmpeg, filename, progressCallback) {
+  if (!State.videoFile && !State.videoData) {
+    throw new Error('No video file loaded');
+  }
+  
+  // If we have cached data, use it directly
+  if (State.videoData) {
+    console.log('[SubtitleEditor] Writing cached video data to FFmpeg...');
+    await ffmpeg.writeFile(filename, new Uint8Array(State.videoData));
+    return;
+  }
+  
+  // For large files, use chunked streaming approach
+  console.log('[SubtitleEditor] Using chunked streaming for large file...');
+  const file = State.videoFile;
+  const fileSize = file.size;
+  const chunkSize = 64 * 1024 * 1024; // 64MB chunks
+  const totalChunks = Math.ceil(fileSize / chunkSize);
+  
+  // Create a buffer to hold all data (we still need to write it all, but we read in chunks)
+  const fileData = new Uint8Array(fileSize);
+  let offset = 0;
+  
+  for (let i = 0; i < totalChunks; i++) {
+    const start = i * chunkSize;
+    const end = Math.min(start + chunkSize, fileSize);
+    
+    if (progressCallback) {
+      const percent = Math.round((i / totalChunks) * 20); // 0-20% for reading
+      progressCallback(percent, `Reading video file... ${Math.round((end / fileSize) * 100)}%`);
+    }
+    
+    try {
+      // Read this chunk using slice (more reliable for large files)
+      const blob = file.slice(start, end);
+      const chunkBuffer = await blob.arrayBuffer();
+      const chunkData = new Uint8Array(chunkBuffer);
+      
+      // Copy to our buffer
+      fileData.set(chunkData, offset);
+      offset += chunkData.length;
+    } catch (e) {
+      console.error('[SubtitleEditor] Error reading chunk', i, ':', e);
+      throw new Error(`Failed to read video file at chunk ${i + 1}/${totalChunks}. Error: ${e.message}`);
+    }
+  }
+  
+  if (progressCallback) {
+    progressCallback(20, 'Writing to FFmpeg...');
+  }
+  
+  // Write the complete file to FFmpeg
+  console.log('[SubtitleEditor] Writing', Math.round(fileSize / 1024 / 1024), 'MB to FFmpeg filesystem...');
+  await ffmpeg.writeFile(filename, fileData);
+  
+  // Cache for potential reuse if memory allows
+  if (fileSize < 1024 * 1024 * 1024) { // Cache if < 1GB
+    State.videoData = fileData.buffer;
+  }
+  
+  console.log('[SubtitleEditor] Video file written to FFmpeg');
+}
+
+// Legacy function for backward compatibility (not used for FFmpeg operations now)
 async function ensureVideoData() {
   if (State.videoData) {
     return State.videoData;
@@ -198,20 +275,37 @@ async function ensureVideoData() {
     throw new Error('No video file loaded');
   }
   
-  // Try to read from file
+  // Try to read from file using chunked approach
   try {
-    State.videoData = await State.videoFile.arrayBuffer();
+    const file = State.videoFile;
+    const fileSize = file.size;
+    
+    // For small files, try direct read
+    if (fileSize < 100 * 1024 * 1024) { // < 100MB
+      State.videoData = await file.arrayBuffer();
+      return State.videoData;
+    }
+    
+    // For larger files, use chunked reading
+    const chunkSize = 64 * 1024 * 1024;
+    const totalChunks = Math.ceil(fileSize / chunkSize);
+    const fileData = new Uint8Array(fileSize);
+    let offset = 0;
+    
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * chunkSize;
+      const end = Math.min(start + chunkSize, fileSize);
+      const blob = file.slice(start, end);
+      const chunkBuffer = await blob.arrayBuffer();
+      fileData.set(new Uint8Array(chunkBuffer), offset);
+      offset += end - start;
+    }
+    
+    State.videoData = fileData.buffer;
     return State.videoData;
   } catch (e) {
-    // File reference is stale, try to fetch from the object URL
-    console.log('[SubtitleEditor] File reference stale, fetching from object URL...');
-    try {
-      const response = await fetch(State.videoUrl);
-      State.videoData = await response.arrayBuffer();
-      return State.videoData;
-    } catch (e2) {
-      throw new Error('Could not read video file. Please try re-uploading the video.');
-    }
+    console.error('[SubtitleEditor] Failed to read video file:', e);
+    throw new Error('Could not read video file. The file may be too large or access was denied. Please try again.');
   }
 }
 
@@ -224,6 +318,7 @@ function clearVideo() {
   
   State.videoFile = null;
   State.videoData = null;
+  State.useLargeFileMode = false;
   State.subtitles = [];
   State.currentSubtitleIndex = -1;
   
@@ -309,12 +404,10 @@ async function extractAudioFromVideo(progressCallback) {
   
   const ffmpeg = State.ffmpeg;
   
-  // Ensure video data is available
-  const videoDataBuffer = await ensureVideoData();
-  const videoData = new Uint8Array(videoDataBuffer);
-  await ffmpeg.writeFile('input.mp4', videoData);
+  // Write video to FFmpeg using streaming approach for large files
+  await writeVideoToFFmpeg(ffmpeg, 'input.mp4', progressCallback);
   
-  if (progressCallback) progressCallback(30, 'Extracting audio...');
+  if (progressCallback) progressCallback(25, 'Extracting audio...');
   
   // Extract audio as WAV (16kHz mono for Whisper)
   await ffmpeg.exec([
@@ -966,12 +1059,10 @@ async function exportVideo() {
     
     const ffmpeg = State.ffmpeg;
     
-    updateLoading(10, 'Preparing files...');
+    updateLoading(5, 'Preparing files...');
     
-    // Ensure video data is available and write to FFmpeg
-    const videoDataBuffer = await ensureVideoData();
-    const videoData = new Uint8Array(videoDataBuffer);
-    await ffmpeg.writeFile('input.mp4', videoData);
+    // Write video to FFmpeg using streaming approach for large files
+    await writeVideoToFFmpeg(ffmpeg, 'input.mp4', updateLoading);
     
     // Generate ASS subtitle file
     const assContent = generateASSContent();
