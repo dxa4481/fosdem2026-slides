@@ -487,7 +487,7 @@ def approve():
 
 @app.route('/api/export-srt')
 def export_srt():
-    """Export subtitles as SRT file."""
+    """Export subtitles as SRT file (loses word-level timing)."""
     def format_srt_time(seconds):
         h = int(seconds // 3600)
         m = int((seconds % 3600) // 60)
@@ -507,6 +507,25 @@ def export_srt():
     # Create temp file
     with tempfile.NamedTemporaryFile(mode='w', suffix='.srt', delete=False) as f:
         f.write(srt_content)
+
+
+@app.route('/api/export-json')
+def export_json():
+    """Export subtitles as JSON with full word-level timing (can be reloaded later)."""
+    export_data = {
+        'version': 1,
+        'video_filename': state['video_filename'],
+        'subtitles': state['subtitles'],
+        'settings': state['settings'],
+    }
+    
+    json_content = json.dumps(export_data, indent=2)
+    
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        f.write(json_content)
+        return send_file(f.name, as_attachment=True,
+                        download_name=f"{Path(state['video_filename']).stem}_subtitles.json",
+                        mimetype='application/json')
         return send_file(f.name, as_attachment=True, 
                         download_name=f"{Path(state['video_filename']).stem}.srt")
 
@@ -520,11 +539,45 @@ def shutdown():
     return 'Server shutting down...'
 
 
+def load_transcription_json(json_path: str) -> bool:
+    """Load a previously saved transcription JSON file."""
+    try:
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+        
+        if 'subtitles' not in data:
+            print(f"   Error: Invalid JSON file (missing 'subtitles')")
+            return False
+        
+        state['subtitles'] = data['subtitles']
+        if 'settings' in data:
+            state['settings'].update(data['settings'])
+        
+        # Count words
+        total_words = sum(len(sub.get('words', [])) for sub in state['subtitles'])
+        print(f"   ✓ Loaded {len(state['subtitles'])} subtitles with {total_words} word timestamps")
+        return True
+        
+    except Exception as e:
+        print(f"   Error loading JSON: {e}")
+        return False
+
+
 def main():
-    parser = argparse.ArgumentParser(description='Video Subtitle Editor')
+    parser = argparse.ArgumentParser(
+        description='Video Subtitle Editor',
+        epilog='''
+Examples:
+  python subtitle_editor.py video.mp4                    # Transcribe and edit
+  python subtitle_editor.py video.mp4 --model small     # Use smaller/faster model
+  python subtitle_editor.py video.mp4 --load subs.json  # Load previous transcription
+        ''',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument('video', help='Path to video file')
     parser.add_argument('--model', default='medium', choices=['tiny', 'base', 'small', 'medium', 'large-v2', 'large-v3'],
                         help='Whisper model size (default: medium)')
+    parser.add_argument('--load', metavar='JSON_FILE', help='Load previous transcription from JSON file (skips transcription)')
     parser.add_argument('--port', type=int, default=5555, help='Port for web server (default: 5555)')
     parser.add_argument('--no-browser', action='store_true', help="Don't open browser automatically")
     
@@ -549,13 +602,36 @@ def main():
     print(f"{'='*60}")
     print(f"\n📹 Video: {video_path.name}")
     
-    # Transcribe
-    words = transcribe_video(str(video_path), args.model)
-    state['words'] = words
-    
-    # Group into subtitles
-    state['subtitles'] = words_to_subtitles(words)
-    print(f"   Created {len(state['subtitles'])} subtitle segments")
+    # Either load existing transcription or transcribe
+    if args.load:
+        json_path = Path(args.load).resolve()
+        if not json_path.exists():
+            print(f"Error: JSON file not found: {json_path}")
+            sys.exit(1)
+        
+        print(f"\n📂 Loading transcription from {json_path.name}...")
+        if not load_transcription_json(str(json_path)):
+            sys.exit(1)
+    else:
+        # Transcribe
+        words = transcribe_video(str(video_path), args.model)
+        state['words'] = words
+        
+        # Group into subtitles
+        state['subtitles'] = words_to_subtitles(words)
+        print(f"   Created {len(state['subtitles'])} subtitle segments")
+        
+        # Auto-save JSON
+        json_output = video_path.parent / f"{video_path.stem}_subtitles.json"
+        with open(json_output, 'w') as f:
+            json.dump({
+                'version': 1,
+                'video_filename': state['video_filename'],
+                'subtitles': state['subtitles'],
+                'settings': state['settings'],
+            }, f, indent=2)
+        print(f"\n💾 Auto-saved transcription to: {json_output.name}")
+        print(f"   (Use --load {json_output.name} to skip transcription next time)")
     
     # Start server
     url = f"http://localhost:{args.port}"

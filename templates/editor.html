@@ -478,7 +478,8 @@
       <div id="status" class="status" style="display: none;"></div>
       
       <div class="action-bar">
-        <button id="export-srt" class="btn btn-secondary">Export SRT</button>
+        <button id="export-json" class="btn btn-secondary" title="Save with word timing (can reload later)">Save JSON</button>
+        <button id="export-srt" class="btn btn-secondary" title="Export SRT (loses word timing)">Export SRT</button>
         <button id="approve-btn" class="btn btn-primary">Burn Subtitles</button>
       </div>
     </div>
@@ -743,7 +744,12 @@
     video.addEventListener('play', updateSubtitleDisplay);
     video.addEventListener('seeked', updateSubtitleDisplay);
 
-    // Export SRT
+    // Export JSON (with word timing)
+    document.getElementById('export-json').addEventListener('click', () => {
+      window.location.href = '/api/export-json';
+    });
+
+    // Export SRT (loses word timing)
     exportSrtBtn.addEventListener('click', () => {
       window.location.href = '/api/export-srt';
     });
