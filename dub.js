@@ -447,11 +447,13 @@ function isFileTooLarge(file) {
 
 // Get a suggested duration limit for large files (in seconds)
 function getSuggestedDurationLimit(fileSizeMB) {
-  // For very large files, limit transcription to first 30-60 minutes
+  // For very large files, limit transcription duration
+  // FFmpeg.wasm has limited memory (~2GB), so we need to be conservative
   // Rough estimate: 1 hour of HD video is ~2-4GB
-  if (fileSizeMB > 3000) return 30 * 60; // 30 minutes for >3GB
-  if (fileSizeMB > 2000) return 45 * 60; // 45 minutes for >2GB
-  return 60 * 60; // 60 minutes for >1.5GB
+  if (fileSizeMB > 4000) return 10 * 60; // 10 minutes for >4GB (very large files)
+  if (fileSizeMB > 3000) return 15 * 60; // 15 minutes for >3GB
+  if (fileSizeMB > 2000) return 20 * 60; // 20 minutes for >2GB
+  return 30 * 60; // 30 minutes for >1.5GB
 }
 
 async function extractAudioFromVideo(progressCallback, durationLimitSeconds = null) {
@@ -484,21 +486,44 @@ async function extractAudioFromVideo(progressCallback, durationLimitSeconds = nu
   if (progressCallback) progressCallback(25, 'Extracting audio...');
   
   // Extract audio as WAV (16kHz mono for Whisper)
-  await ffmpeg.exec([
-    '-i', 'input.mp4',
-    '-vn',
-    '-acodec', 'pcm_s16le',
-    '-ar', '16000',
-    '-ac', '1',
-    'audio.wav'
-  ]);
+  try {
+    await ffmpeg.exec([
+      '-i', 'input.mp4',
+      '-vn',
+      '-acodec', 'pcm_s16le',
+      '-ar', '16000',
+      '-ac', '1',
+      'audio.wav'
+    ]);
+  } catch (e) {
+    console.error('[SubtitleEditor] FFmpeg exec failed:', e);
+    try { await ffmpeg.deleteFile('input.mp4'); } catch (ignored) {}
+    throw new Error(`Audio extraction failed: ${e.message}`);
+  }
+  
+  // Delete input video BEFORE reading audio to free memory
+  if (progressCallback) progressCallback(35, 'Freeing memory...');
+  try {
+    await ffmpeg.deleteFile('input.mp4');
+  } catch (e) {
+    console.warn('[SubtitleEditor] Could not delete input file:', e);
+  }
   
   // Read the audio file
-  const audioData = await ffmpeg.readFile('audio.wav');
+  let audioData;
+  try {
+    audioData = await ffmpeg.readFile('audio.wav');
+  } catch (e) {
+    console.error('[SubtitleEditor] Failed to read audio file:', e);
+    throw new Error(`Failed to read extracted audio: ${e.message}`);
+  }
   
-  // Clean up
-  await ffmpeg.deleteFile('input.mp4');
-  await ffmpeg.deleteFile('audio.wav');
+  // Clean up audio file
+  try {
+    await ffmpeg.deleteFile('audio.wav');
+  } catch (e) {
+    console.warn('[SubtitleEditor] Could not delete audio file:', e);
+  }
   
   if (progressCallback) progressCallback(40, 'Audio extracted');
   
@@ -519,11 +544,13 @@ async function extractAudioFromLargeVideo(ffmpeg, progressCallback, durationLimi
   // Typical video bitrate: ~5-10 Mbps, so 1 minute ≈ 40-80MB
   
   // Estimate bytes needed for the duration we want
-  // Use a conservative estimate of 100MB per minute to ensure we get enough
-  const bytesPerMinute = 100 * 1024 * 1024;
+  // Use a more conservative estimate to avoid memory issues
+  // FFmpeg.wasm has limited memory (~2GB total), so we cap at 800MB of input
+  const bytesPerMinute = 80 * 1024 * 1024; // 80MB per minute estimate
+  const maxInputBytes = 800 * 1024 * 1024; // Max 800MB to leave room for processing
   const estimatedBytesNeeded = Math.min(
     (durationLimitSeconds / 60) * bytesPerMinute,
-    MAX_FILE_SIZE_BYTES * 0.9 // Leave some headroom
+    maxInputBytes
   );
   
   console.log(`[SubtitleEditor] Estimating ${Math.round(estimatedBytesNeeded / (1024*1024))}MB needed for ${Math.round(durationLimitSeconds/60)} minutes`);
@@ -592,14 +619,40 @@ async function extractAudioFromLargeVideo(ffmpeg, progressCallback, durationLimi
     'audio.wav'
   ];
   
-  await ffmpeg.exec(ffmpegArgs);
+  try {
+    await ffmpeg.exec(ffmpegArgs);
+  } catch (e) {
+    console.error('[SubtitleEditor] FFmpeg exec failed:', e);
+    // Try to clean up
+    try { await ffmpeg.deleteFile('input.mp4'); } catch (ignored) {}
+    throw new Error(`Audio extraction failed: ${e.message}`);
+  }
   
-  // Read the audio file
-  const audioData = await ffmpeg.readFile('audio.wav');
+  // IMPORTANT: Delete the input video BEFORE reading audio to free memory
+  // This prevents FFmpeg.wasm from running out of memory
+  if (progressCallback) progressCallback(35, 'Freeing memory...');
+  try {
+    await ffmpeg.deleteFile('input.mp4');
+  } catch (e) {
+    console.warn('[SubtitleEditor] Could not delete input file:', e);
+  }
   
-  // Clean up
-  await ffmpeg.deleteFile('input.mp4');
-  await ffmpeg.deleteFile('audio.wav');
+  // Now read the audio file (with input video memory freed)
+  if (progressCallback) progressCallback(37, 'Reading audio data...');
+  let audioData;
+  try {
+    audioData = await ffmpeg.readFile('audio.wav');
+  } catch (e) {
+    console.error('[SubtitleEditor] Failed to read audio file:', e);
+    throw new Error(`Failed to read extracted audio. The file may be too large for browser memory. Try a shorter video.`);
+  }
+  
+  // Clean up audio file
+  try {
+    await ffmpeg.deleteFile('audio.wav');
+  } catch (e) {
+    console.warn('[SubtitleEditor] Could not delete audio file:', e);
+  }
   
   if (progressCallback) progressCallback(40, 'Audio extracted');
   
