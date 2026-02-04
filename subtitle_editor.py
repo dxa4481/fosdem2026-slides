@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import webbrowser
 from pathlib import Path
 
@@ -34,6 +35,59 @@ try:
 except ImportError:
     print("Error: faster-whisper not installed. Run: pip install faster-whisper")
     sys.exit(1)
+
+
+def get_video_duration(video_path: str) -> float:
+    """Get video duration in seconds using ffprobe."""
+    try:
+        result = subprocess.run([
+            'ffprobe', '-v', 'quiet',
+            '-show_entries', 'format=duration',
+            '-of', 'csv=p=0',
+            video_path
+        ], capture_output=True, text=True)
+        return float(result.stdout.strip())
+    except:
+        return 0
+
+
+def print_progress_bar(progress: float, width: int = 40, prefix: str = '', suffix: str = ''):
+    """Print a progress bar to the terminal."""
+    filled = int(width * progress)
+    bar = '█' * filled + '░' * (width - filled)
+    percent = progress * 100
+    sys.stdout.write(f'\r   {prefix} [{bar}] {percent:5.1f}% {suffix}')
+    sys.stdout.flush()
+
+
+class ModelLoadingProgress:
+    """Show a spinner while model loads."""
+    def __init__(self, message: str):
+        self.message = message
+        self.running = False
+        self.thread = None
+    
+    def start(self):
+        self.running = True
+        self.thread = threading.Thread(target=self._spin)
+        self.thread.start()
+    
+    def stop(self, final_message: str = None):
+        self.running = False
+        if self.thread:
+            self.thread.join()
+        if final_message:
+            sys.stdout.write(f'\r   {final_message}' + ' ' * 20 + '\n')
+            sys.stdout.flush()
+    
+    def _spin(self):
+        spinner = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+        i = 0
+        while self.running:
+            sys.stdout.write(f'\r   {spinner[i]} {self.message}')
+            sys.stdout.flush()
+            i = (i + 1) % len(spinner)
+            time.sleep(0.1)
 
 
 # Global state
@@ -60,7 +114,15 @@ def transcribe_video(video_path: str, model_size: str = "medium") -> list:
     Transcribe video using faster-whisper with word-level timestamps.
     Returns list of words with timestamps.
     """
+    # Get video duration for progress tracking
+    duration = get_video_duration(video_path)
+    duration_str = f"{int(duration//60)}:{int(duration%60):02d}" if duration else "unknown"
+    print(f"\n📹 Video duration: {duration_str}")
+    
+    # Load model with spinner
     print(f"\n🎤 Loading Whisper model ({model_size})...")
+    spinner = ModelLoadingProgress(f"Downloading/loading {model_size} model (this may take a minute)...")
+    spinner.start()
     
     # Use GPU if available
     device = "cuda"
@@ -68,26 +130,36 @@ def transcribe_video(video_path: str, model_size: str = "medium") -> list:
     
     try:
         model = WhisperModel(model_size, device=device, compute_type=compute_type)
-        print(f"   Using GPU (CUDA)")
+        spinner.stop(f"✓ Model loaded (GPU/CUDA)")
     except Exception as e:
-        print(f"   GPU not available ({e}), falling back to CPU")
+        spinner.stop(f"GPU not available, trying CPU...")
         device = "cpu"
         compute_type = "int8"
+        spinner = ModelLoadingProgress(f"Loading {model_size} model on CPU...")
+        spinner.start()
         model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        spinner.stop(f"✓ Model loaded (CPU)")
     
-    print(f"\n📝 Transcribing {Path(video_path).name}...")
+    print(f"\n📝 Transcribing audio...")
     
     # Transcribe with word timestamps
-    segments, info = model.transcribe(
+    segments_generator, info = model.transcribe(
         video_path,
         word_timestamps=True,
         language="en",
     )
     
     print(f"   Detected language: {info.language} (probability: {info.language_probability:.2f})")
+    print()
     
+    # Process segments with progress bar
     words = []
-    for segment in segments:
+    last_end = 0
+    segment_count = 0
+    
+    for segment in segments_generator:
+        segment_count += 1
+        
         if segment.words:
             for word in segment.words:
                 words.append({
@@ -95,8 +167,17 @@ def transcribe_video(video_path: str, model_size: str = "medium") -> list:
                     'start': round(word.start, 3),
                     'end': round(word.end, 3),
                 })
+                last_end = word.end
+        
+        # Update progress bar
+        if duration > 0:
+            progress = min(1.0, last_end / duration)
+            time_str = f"{int(last_end//60)}:{int(last_end%60):02d}/{duration_str}"
+            print_progress_bar(progress, prefix='Transcribing', suffix=f'{time_str} ({len(words)} words)')
     
-    print(f"   Found {len(words)} words")
+    # Final newline after progress bar
+    print()
+    print(f"\n   ✓ Found {len(words)} words in {segment_count} segments")
     return words
 
 
@@ -242,9 +323,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 def burn_subtitles(video_path: str, ass_path: str, output_path: str) -> bool:
     """
-    Burn subtitles into video using FFmpeg.
+    Burn subtitles into video using FFmpeg with progress reporting.
     """
     print(f"\n🎬 Burning subtitles into video...")
+    
+    # Get video duration for progress
+    duration = get_video_duration(video_path)
     
     # Escape the ASS path for FFmpeg filter
     ass_escaped = ass_path.replace('\\', '/').replace(':', r'\:').replace("'", r"\'")
@@ -257,18 +341,61 @@ def burn_subtitles(video_path: str, ass_path: str, output_path: str) -> bool:
         '-c:v', 'libx264',
         '-preset', 'medium',
         '-crf', '23',
+        '-progress', 'pipe:1',  # Output progress to stdout
         output_path
     ]
     
-    print(f"   Running: {' '.join(cmd)}")
-    
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            print(f"   FFmpeg error: {result.stderr}")
+        import re
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True
+        )
+        
+        # Parse progress from FFmpeg
+        current_time = 0
+        while True:
+            line = process.stdout.readline()
+            if not line and process.poll() is not None:
+                break
+            
+            # Parse "out_time_ms" or "out_time" from progress output
+            if 'out_time_ms=' in line:
+                try:
+                    ms = int(line.split('=')[1].strip())
+                    current_time = ms / 1000000.0  # Convert microseconds to seconds
+                except:
+                    pass
+            elif 'out_time=' in line:
+                try:
+                    time_str = line.split('=')[1].strip()
+                    parts = time_str.split(':')
+                    if len(parts) == 3:
+                        h, m, s = parts
+                        current_time = int(h) * 3600 + int(m) * 60 + float(s)
+                except:
+                    pass
+            
+            # Update progress bar
+            if duration > 0 and current_time > 0:
+                progress = min(1.0, current_time / duration)
+                print_progress_bar(progress, prefix='Encoding', suffix=f'{int(current_time)}s / {int(duration)}s')
+        
+        process.wait()
+        
+        # Clear progress line
+        print()
+        
+        if process.returncode != 0:
+            stderr = process.stderr.read()
+            print(f"   FFmpeg error: {stderr}")
             return False
+        
         print(f"   ✅ Output saved to: {output_path}")
         return True
+        
     except Exception as e:
         print(f"   Error: {e}")
         return False
