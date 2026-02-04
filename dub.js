@@ -540,19 +540,24 @@ async function extractAudioFromVideo(progressCallback, durationLimitSeconds = nu
 }
 
 // Extract audio using Web Audio API (works better for very large files)
-// This plays the video silently and captures audio in real-time
+// This plays the video and captures audio through Web Audio API
 async function extractAudioWithWebAudio(durationLimitSeconds, progressCallback) {
   return new Promise((resolve, reject) => {
     const video = document.createElement('video');
-    video.muted = true; // Mute to avoid audio feedback
+    // DO NOT set muted=true - this prevents audio from flowing through Web Audio API
     video.src = State.videoUrl;
+    video.crossOrigin = 'anonymous';
     
-    const audioContext = new (window.AudioContext || window.webkitAudioContext)({
-      sampleRate: 16000 // Whisper expects 16kHz
-    });
+    // Use standard sample rate, we'll resample later
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const targetSampleRate = 16000; // Whisper expects 16kHz
     
-    // Create a media element source
+    // Create a media element source - this routes video audio through Web Audio
     const source = audioContext.createMediaElementSource(video);
+    
+    // Create a gain node set to 0 to silence output (but audio still flows!)
+    const silencer = audioContext.createGain();
+    silencer.gain.value = 0;
     
     // Create a script processor to capture audio
     const bufferSize = 4096;
@@ -560,91 +565,141 @@ async function extractAudioWithWebAudio(durationLimitSeconds, progressCallback) 
     
     const audioChunks = [];
     let totalSamples = 0;
-    const maxSamples = durationLimitSeconds * 16000; // 16kHz sample rate
+    // Calculate max samples at the audio context's sample rate
+    const maxSamplesAtContextRate = durationLimitSeconds * audioContext.sampleRate;
     
     processor.onaudioprocess = (e) => {
-      if (totalSamples >= maxSamples) {
+      if (totalSamples >= maxSamplesAtContextRate) {
         return;
       }
       
       const inputData = e.inputBuffer.getChannelData(0);
-      const chunk = new Float32Array(inputData.length);
-      chunk.set(inputData);
-      audioChunks.push(chunk);
-      totalSamples += inputData.length;
+      // Check if there's actual audio (not just silence)
+      let hasAudio = false;
+      for (let i = 0; i < inputData.length; i += 100) {
+        if (Math.abs(inputData[i]) > 0.001) {
+          hasAudio = true;
+          break;
+        }
+      }
       
-      if (progressCallback) {
-        const progress = Math.min(40, 10 + (totalSamples / maxSamples) * 30);
-        const seconds = Math.round(totalSamples / 16000);
-        progressCallback(progress, `Extracting audio... ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`);
+      if (hasAudio || audioChunks.length > 0) {
+        // Only start recording once we detect audio, then keep recording
+        const chunk = new Float32Array(inputData.length);
+        chunk.set(inputData);
+        audioChunks.push(chunk);
+        totalSamples += inputData.length;
+      }
+      
+      if (progressCallback && totalSamples > 0) {
+        const progress = Math.min(40, 10 + (totalSamples / maxSamplesAtContextRate) * 30);
+        const seconds = Math.round(totalSamples / audioContext.sampleRate);
+        progressCallback(progress, `Capturing audio... ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')} (live)`);
       }
     };
     
+    // Connect: source -> processor -> silencer -> destination
+    // This ensures audio flows but is silenced
     source.connect(processor);
-    processor.connect(audioContext.destination);
+    processor.connect(silencer);
+    silencer.connect(audioContext.destination);
     
-    video.onloadedmetadata = () => {
-      video.playbackRate = 16; // Speed up to 16x for faster extraction
-      video.play().catch(reject);
+    video.onloadedmetadata = async () => {
+      // Resume audio context (required for autoplay policies)
+      if (audioContext.state === 'suspended') {
+        await audioContext.resume();
+      }
+      
+      // Use 4x speed - fast but still captures audio reliably
+      video.playbackRate = 4;
+      
+      console.log('[SubtitleEditor] Web Audio: Starting capture at', audioContext.sampleRate, 'Hz, 4x speed');
+      console.log('[SubtitleEditor] Target duration:', durationLimitSeconds, 'seconds, will take ~', Math.round(durationLimitSeconds/4), 'seconds');
+      
+      video.play().catch(e => {
+        console.error('[SubtitleEditor] Video play failed:', e);
+        reject(new Error('Could not play video for audio extraction: ' + e.message));
+      });
     };
     
     video.onerror = () => {
       reject(new Error('Failed to load video for audio extraction'));
     };
     
-    // Check periodically if we have enough audio
-    const checkInterval = setInterval(() => {
-      if (totalSamples >= maxSamples || video.ended) {
-        clearInterval(checkInterval);
-        video.pause();
-        processor.disconnect();
-        source.disconnect();
-        audioContext.close();
-        
-        // Combine all chunks into one buffer
-        const totalLength = audioChunks.reduce((sum, chunk) => sum + chunk.length, 0);
-        const combinedAudio = new Float32Array(Math.min(totalLength, maxSamples));
-        let offset = 0;
-        for (const chunk of audioChunks) {
-          const remaining = combinedAudio.length - offset;
-          if (remaining <= 0) break;
-          const copyLength = Math.min(chunk.length, remaining);
-          combinedAudio.set(chunk.subarray(0, copyLength), offset);
-          offset += copyLength;
-        }
-        
-        // Convert to WAV format (16-bit PCM)
-        const wavBuffer = float32ToWav(combinedAudio, 16000);
-        resolve(new Uint8Array(wavBuffer));
-      }
-    }, 500);
-    
-    // Timeout after duration limit + some buffer
-    setTimeout(() => {
-      clearInterval(checkInterval);
+    const finishCapture = () => {
       video.pause();
       try {
         processor.disconnect();
         source.disconnect();
+        silencer.disconnect();
         audioContext.close();
       } catch (e) {}
       
-      if (audioChunks.length === 0) {
-        reject(new Error('No audio captured'));
-      } else {
-        // Return what we have
-        const totalLength = audioChunks.reduce((sum, chunk) => sum + chunk.length, 0);
-        const combinedAudio = new Float32Array(totalLength);
-        let offset = 0;
-        for (const chunk of audioChunks) {
-          combinedAudio.set(chunk, offset);
-          offset += chunk.length;
-        }
-        const wavBuffer = float32ToWav(combinedAudio, 16000);
-        resolve(new Uint8Array(wavBuffer));
+      console.log('[SubtitleEditor] Web Audio: Captured', audioChunks.length, 'chunks,', totalSamples, 'samples');
+      
+      if (audioChunks.length === 0 || totalSamples < audioContext.sampleRate) {
+        reject(new Error('No audio captured - video may not have audio track'));
+        return;
       }
-    }, (durationLimitSeconds / 16 + 30) * 1000); // Account for 16x playback speed + buffer
+      
+      // Combine all chunks
+      const totalLength = audioChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+      const combinedAudio = new Float32Array(totalLength);
+      let offset = 0;
+      for (const chunk of audioChunks) {
+        combinedAudio.set(chunk, offset);
+        offset += chunk.length;
+      }
+      
+      if (progressCallback) progressCallback(38, 'Resampling audio to 16kHz...');
+      
+      // Resample from audioContext.sampleRate to 16kHz
+      const resampledAudio = resampleAudio(combinedAudio, audioContext.sampleRate, targetSampleRate);
+      
+      console.log('[SubtitleEditor] Web Audio: Resampled from', combinedAudio.length, 'to', resampledAudio.length, 'samples');
+      
+      // Convert to WAV format (16-bit PCM)
+      const wavBuffer = float32ToWav(resampledAudio, targetSampleRate);
+      resolve(new Uint8Array(wavBuffer));
+    };
+    
+    // Check periodically if we have enough audio
+    const checkInterval = setInterval(() => {
+      if (totalSamples >= maxSamplesAtContextRate || video.ended) {
+        clearInterval(checkInterval);
+        finishCapture();
+      }
+    }, 500);
+    
+    // Timeout after expected duration (at 4x speed) + buffer
+    const timeoutMs = (durationLimitSeconds / 4 + 10) * 1000;
+    setTimeout(() => {
+      clearInterval(checkInterval);
+      console.log('[SubtitleEditor] Web Audio: Timeout reached, finishing capture');
+      finishCapture();
+    }, timeoutMs);
   });
+}
+
+// Simple linear resampling
+function resampleAudio(samples, fromRate, toRate) {
+  if (fromRate === toRate) return samples;
+  
+  const ratio = fromRate / toRate;
+  const newLength = Math.round(samples.length / ratio);
+  const result = new Float32Array(newLength);
+  
+  for (let i = 0; i < newLength; i++) {
+    const srcIndex = i * ratio;
+    const srcIndexFloor = Math.floor(srcIndex);
+    const srcIndexCeil = Math.min(srcIndexFloor + 1, samples.length - 1);
+    const t = srcIndex - srcIndexFloor;
+    
+    // Linear interpolation
+    result[i] = samples[srcIndexFloor] * (1 - t) + samples[srcIndexCeil] * t;
+  }
+  
+  return result;
 }
 
 // Convert Float32Array audio to WAV format
