@@ -28,7 +28,9 @@ const State = {
   nextSubtitleId: 1,
   isManualPreview: false,
   partialTranscription: false, // True if only part of video was transcribed
-  transcriptionDurationLimit: null // Duration limit in seconds if partial
+  transcriptionDurationLimit: null, // Duration limit in seconds if partial
+  webAudioFailed: false, // If Web Audio capture failed, don't retry
+  mediaElementSource: null // Cache to avoid creating multiple sources
 };
 
 // ============================================================================
@@ -370,6 +372,7 @@ function clearVideo() {
   State.useLargeFileMode = false;
   State.subtitles = [];
   State.currentSubtitleIndex = -1;
+  State.webAudioFailed = false; // Reset for next video
   
   DOM.videoPlayer.src = '';
   DOM.uploadArea.style.display = 'block';
@@ -539,110 +542,54 @@ async function extractAudioFromVideo(progressCallback, durationLimitSeconds = nu
   return audioData;
 }
 
-// Extract audio using Web Audio API (works better for very large files)
-// This plays the video and captures audio through Web Audio API
+// Extract audio using Web Audio API at NORMAL SPEED (1x)
+// Playing faster than 1x causes pitch shift which breaks transcription!
+// For 2 minutes of audio, this takes 2 minutes of real time - that's acceptable
 async function extractAudioWithWebAudio(durationLimitSeconds, progressCallback) {
   return new Promise((resolve, reject) => {
+    // Create a fresh video element to avoid MediaElementSource conflicts
     const video = document.createElement('video');
-    // DO NOT set muted=true - this prevents audio from flowing through Web Audio API
     video.src = State.videoUrl;
-    video.crossOrigin = 'anonymous';
+    video.preload = 'auto';
     
     // Use standard sample rate, we'll resample later
     const audioContext = new (window.AudioContext || window.webkitAudioContext)();
     const targetSampleRate = 16000; // Whisper expects 16kHz
     
-    // Create a media element source - this routes video audio through Web Audio
-    const source = audioContext.createMediaElementSource(video);
-    
-    // Create a gain node set to 0 to silence output (but audio still flows!)
-    const silencer = audioContext.createGain();
-    silencer.gain.value = 0;
-    
-    // Create a script processor to capture audio
-    const bufferSize = 4096;
-    const processor = audioContext.createScriptProcessor(bufferSize, 1, 1);
+    // Wait for video to be ready
+    let source;
     
     const audioChunks = [];
     let totalSamples = 0;
-    // Calculate max samples at the audio context's sample rate
     const maxSamplesAtContextRate = durationLimitSeconds * audioContext.sampleRate;
+    let processor = null;
+    let silencer = null;
+    let started = false;
     
-    processor.onaudioprocess = (e) => {
-      if (totalSamples >= maxSamplesAtContextRate) {
-        return;
-      }
-      
-      const inputData = e.inputBuffer.getChannelData(0);
-      // Check if there's actual audio (not just silence)
-      let hasAudio = false;
-      for (let i = 0; i < inputData.length; i += 100) {
-        if (Math.abs(inputData[i]) > 0.001) {
-          hasAudio = true;
-          break;
-        }
-      }
-      
-      if (hasAudio || audioChunks.length > 0) {
-        // Only start recording once we detect audio, then keep recording
-        const chunk = new Float32Array(inputData.length);
-        chunk.set(inputData);
-        audioChunks.push(chunk);
-        totalSamples += inputData.length;
-      }
-      
-      if (progressCallback && totalSamples > 0) {
-        const progress = Math.min(40, 10 + (totalSamples / maxSamplesAtContextRate) * 30);
-        const seconds = Math.round(totalSamples / audioContext.sampleRate);
-        progressCallback(progress, `Capturing audio... ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')} (live)`);
-      }
-    };
-    
-    // Connect: source -> processor -> silencer -> destination
-    // This ensures audio flows but is silenced
-    source.connect(processor);
-    processor.connect(silencer);
-    silencer.connect(audioContext.destination);
-    
-    video.onloadedmetadata = async () => {
-      // Resume audio context (required for autoplay policies)
-      if (audioContext.state === 'suspended') {
-        await audioContext.resume();
-      }
-      
-      // Use 4x speed - fast but still captures audio reliably
-      video.playbackRate = 4;
-      
-      console.log('[SubtitleEditor] Web Audio: Starting capture at', audioContext.sampleRate, 'Hz, 4x speed');
-      console.log('[SubtitleEditor] Target duration:', durationLimitSeconds, 'seconds, will take ~', Math.round(durationLimitSeconds/4), 'seconds');
-      
-      video.play().catch(e => {
-        console.error('[SubtitleEditor] Video play failed:', e);
-        reject(new Error('Could not play video for audio extraction: ' + e.message));
-      });
-    };
-    
-    video.onerror = () => {
-      reject(new Error('Failed to load video for audio extraction'));
+    const cleanup = () => {
+      video.pause();
+      video.src = '';
+      try {
+        if (processor) processor.disconnect();
+        if (source) source.disconnect();
+        if (silencer) silencer.disconnect();
+        audioContext.close();
+      } catch (e) {}
     };
     
     const finishCapture = () => {
-      video.pause();
-      try {
-        processor.disconnect();
-        source.disconnect();
-        silencer.disconnect();
-        audioContext.close();
-      } catch (e) {}
+      cleanup();
       
-      console.log('[SubtitleEditor] Web Audio: Captured', audioChunks.length, 'chunks,', totalSamples, 'samples');
+      console.log('[SubtitleEditor] Web Audio: Captured', audioChunks.length, 'chunks,', totalSamples, 'samples at', audioContext.sampleRate, 'Hz');
       
-      if (audioChunks.length === 0 || totalSamples < audioContext.sampleRate) {
-        reject(new Error('No audio captured - video may not have audio track'));
+      if (audioChunks.length === 0 || totalSamples < audioContext.sampleRate * 5) {
+        reject(new Error('Insufficient audio captured - video may not have an audio track'));
         return;
       }
       
       // Combine all chunks
+      if (progressCallback) progressCallback(38, 'Processing captured audio...');
+      
       const totalLength = audioChunks.reduce((sum, chunk) => sum + chunk.length, 0);
       const combinedAudio = new Float32Array(totalLength);
       let offset = 0;
@@ -651,7 +598,7 @@ async function extractAudioWithWebAudio(durationLimitSeconds, progressCallback) 
         offset += chunk.length;
       }
       
-      if (progressCallback) progressCallback(38, 'Resampling audio to 16kHz...');
+      if (progressCallback) progressCallback(39, 'Resampling to 16kHz...');
       
       // Resample from audioContext.sampleRate to 16kHz
       const resampledAudio = resampleAudio(combinedAudio, audioContext.sampleRate, targetSampleRate);
@@ -663,20 +610,98 @@ async function extractAudioWithWebAudio(durationLimitSeconds, progressCallback) 
       resolve(new Uint8Array(wavBuffer));
     };
     
+    // Start capture when video is ready
+    const startCapture = async () => {
+      if (started) return;
+      started = true;
+      
+      try {
+        // Create media element source
+        source = audioContext.createMediaElementSource(video);
+        
+        // Create gain node to silence output (but audio still flows through!)
+        silencer = audioContext.createGain();
+        silencer.gain.value = 0;
+        
+        // Create script processor to capture audio
+        const bufferSize = 4096;
+        processor = audioContext.createScriptProcessor(bufferSize, 1, 1);
+        
+        processor.onaudioprocess = (e) => {
+          if (totalSamples >= maxSamplesAtContextRate) return;
+          
+          const inputData = e.inputBuffer.getChannelData(0);
+          const chunk = new Float32Array(inputData.length);
+          chunk.set(inputData);
+          audioChunks.push(chunk);
+          totalSamples += inputData.length;
+          
+          if (progressCallback) {
+            const capturedSeconds = totalSamples / audioContext.sampleRate;
+            const progress = Math.min(40, 10 + (capturedSeconds / durationLimitSeconds) * 30);
+            const mins = Math.floor(capturedSeconds / 60);
+            const secs = Math.floor(capturedSeconds % 60);
+            const remaining = Math.max(0, durationLimitSeconds - capturedSeconds);
+            const remMins = Math.floor(remaining / 60);
+            const remSecs = Math.floor(remaining % 60);
+            progressCallback(progress, `Recording: ${mins}:${String(secs).padStart(2,'0')} / ${Math.floor(durationLimitSeconds/60)}:${String(Math.floor(durationLimitSeconds%60)).padStart(2,'0')} (${remMins}:${String(remSecs).padStart(2,'0')} left)`);
+          }
+        };
+        
+        // Connect: source -> processor -> silencer -> destination
+        // Audio flows through but is silenced at the end
+        source.connect(processor);
+        processor.connect(silencer);
+        silencer.connect(audioContext.destination);
+        
+        // Resume audio context if suspended
+        if (audioContext.state === 'suspended') {
+          await audioContext.resume();
+        }
+        
+        // CRITICAL: Play at 1x speed! Faster = pitch shift = broken transcription
+        video.playbackRate = 1;
+        
+        console.log('[SubtitleEditor] Web Audio: Starting real-time capture at', audioContext.sampleRate, 'Hz');
+        console.log('[SubtitleEditor] Duration:', durationLimitSeconds, 'seconds (this takes real time)');
+        
+        await video.play();
+        
+      } catch (e) {
+        console.error('[SubtitleEditor] Web Audio setup failed:', e);
+        cleanup();
+        reject(new Error('Could not set up audio capture: ' + e.message));
+      }
+    };
+    
+    video.addEventListener('canplay', startCapture, { once: true });
+    video.addEventListener('error', () => {
+      cleanup();
+      reject(new Error('Video failed to load for audio capture'));
+    }, { once: true });
+    
+    // Start loading the video
+    video.load();
+    
     // Check periodically if we have enough audio
     const checkInterval = setInterval(() => {
       if (totalSamples >= maxSamplesAtContextRate || video.ended) {
         clearInterval(checkInterval);
         finishCapture();
       }
-    }, 500);
+    }, 1000);
     
-    // Timeout after expected duration (at 4x speed) + buffer
-    const timeoutMs = (durationLimitSeconds / 4 + 10) * 1000;
+    // Timeout after duration + generous buffer
+    const timeoutMs = (durationLimitSeconds + 30) * 1000;
     setTimeout(() => {
       clearInterval(checkInterval);
-      console.log('[SubtitleEditor] Web Audio: Timeout reached, finishing capture');
-      finishCapture();
+      if (totalSamples > audioContext.sampleRate * 10) {
+        console.log('[SubtitleEditor] Web Audio: Timeout, using', Math.round(totalSamples/audioContext.sampleRate), 'seconds of captured audio');
+        finishCapture();
+      } else {
+        cleanup();
+        reject(new Error('Audio capture timed out - only got ' + Math.round(totalSamples/audioContext.sampleRate) + ' seconds'));
+      }
     }, timeoutMs);
   });
 }
@@ -757,20 +782,30 @@ async function extractAudioFromLargeVideo(ffmpeg, progressCallback, durationLimi
     );
   }
   
-  // For very large files, try using Web Audio API instead of FFmpeg
-  // This extracts audio without loading the whole file into memory
-  if (fileSizeMB > 2000) {
-    console.log('[SubtitleEditor] File very large, trying Web Audio API approach...');
-    if (progressCallback) progressCallback(10, 'Trying alternative audio extraction...');
+  // For very large files (>2GB), try using Web Audio API instead of FFmpeg
+  // This captures audio in real-time without loading the whole file
+  // NOTE: This takes as long as the audio duration (2 min = 2 min wait)
+  if (fileSizeMB > 2000 && !State.webAudioFailed) {
+    console.log('[SubtitleEditor] File very large (' + fileSizeMB + 'MB), trying Web Audio API...');
+    if (progressCallback) progressCallback(5, `Large file detected. Will record ${Math.round(durationLimitSeconds/60)} minutes of audio in real-time...`);
+    
+    // Give user a moment to see the message
+    await new Promise(r => setTimeout(r, 1000));
+    
     try {
       const audioData = await extractAudioWithWebAudio(durationLimitSeconds, progressCallback);
-      if (audioData) {
+      if (audioData && audioData.length > 1000) {
+        console.log('[SubtitleEditor] Web Audio capture successful, got', audioData.length, 'bytes');
         State.partialTranscription = true;
         State.transcriptionDurationLimit = durationLimitSeconds;
         return audioData;
+      } else {
+        throw new Error('Captured audio too small');
       }
     } catch (e) {
-      console.warn('[SubtitleEditor] Web Audio extraction failed, falling back to FFmpeg:', e);
+      console.error('[SubtitleEditor] Web Audio extraction failed:', e);
+      State.webAudioFailed = true; // Don't try again
+      if (progressCallback) progressCallback(10, 'Real-time capture failed, trying FFmpeg...');
     }
   }
   
