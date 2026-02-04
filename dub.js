@@ -1044,56 +1044,141 @@ function processTranscriptionToSubtitles(result) {
   return subtitles;
 }
 
+// Maximum file size we can reliably process in browser (in bytes)
+// Beyond this, we need to use chunked reading or suggest alternatives
+const MAX_FULL_READ_MB = 500; // 500MB for full file read
+const MAX_PARTIAL_READ_MB = 2000; // 2GB - we can try partial extraction
+const ABSOLUTE_MAX_MB = 4000; // 4GB - hard limit, browser won't handle this
+
 async function generateSubtitles() {
   if (!State.videoFile) return;
   
-  const fileSizeMB = Math.round(State.videoFile.size / (1024 * 1024));
+  const fileSizeBytes = State.videoFile.size;
+  const fileSizeMB = Math.round(fileSizeBytes / (1024 * 1024));
   console.log('[SubtitleEditor] Starting transcription, file size:', fileSizeMB, 'MB');
+  
+  // Check file size limits
+  if (fileSizeMB > ABSOLUTE_MAX_MB) {
+    alert(`File too large (${fileSizeMB} MB).\n\nBrowser-based transcription cannot handle files larger than ${ABSOLUTE_MAX_MB} MB.\n\nPlease use a desktop tool like:\n- OpenAI Whisper (free, command line)\n- MacWhisper (Mac)\n- Buzz (cross-platform)\n\nOr compress your video first using HandBrake or similar.`);
+    return;
+  }
+  
+  if (fileSizeMB > MAX_PARTIAL_READ_MB) {
+    const proceed = confirm(`File is very large (${fileSizeMB} MB).\n\nThis will likely fail due to browser memory limits. We'll try to extract just the first 5 minutes of audio.\n\nFor best results with large files, consider using desktop transcription tools.\n\nTry anyway?`);
+    if (!proceed) return;
+  } else if (fileSizeMB > MAX_FULL_READ_MB) {
+    const proceed = confirm(`File is large (${fileSizeMB} MB).\n\nWe'll extract just the first 10 minutes of audio to avoid browser memory issues.\n\nFor full video transcription, consider using desktop tools or compressing the video first.\n\nContinue?`);
+    if (!proceed) return;
+  }
   
   DOM.generateBtn.disabled = true;
   showLoading('Generating Subtitles', 'Step 1: Loading Whisper model...');
   
   try {
-    // Step 1: Load Whisper
+    // Step 1: Load Whisper FIRST (before reading file, to keep file handle fresh)
     console.log('[SubtitleEditor] Step 1: Loading Whisper...');
     await initWhisper((progress, message) => {
-      updateLoading(progress * 0.2, 'Loading Whisper: ' + message);
+      updateLoading(progress * 0.15, 'Loading Whisper: ' + message);
     });
     console.log('[SubtitleEditor] Whisper loaded successfully');
     
     // Step 2: Load FFmpeg
-    updateLoading(20, 'Step 2: Loading FFmpeg...');
+    updateLoading(15, 'Step 2: Loading FFmpeg...');
     console.log('[SubtitleEditor] Step 2: Loading FFmpeg...');
     if (!State.ffmpegLoaded) {
       await initFFmpeg();
     }
     console.log('[SubtitleEditor] FFmpeg loaded successfully');
     
-    // Step 3: Read video file
-    updateLoading(30, 'Step 3: Reading video file...');
+    // Step 3: Read video file (with size-appropriate strategy)
+    updateLoading(20, 'Step 3: Reading video file...');
     console.log('[SubtitleEditor] Step 3: Reading video file...');
-    const videoBuffer = await State.videoFile.arrayBuffer();
-    const videoData = new Uint8Array(videoBuffer);
-    console.log('[SubtitleEditor] Video file read:', videoData.length, 'bytes');
+    
+    let videoData;
+    let maxAudioDuration; // in seconds
+    
+    if (fileSizeMB <= MAX_FULL_READ_MB) {
+      // Small file: read entire file
+      console.log('[SubtitleEditor] Using full file read strategy');
+      const videoBuffer = await State.videoFile.arrayBuffer();
+      videoData = new Uint8Array(videoBuffer);
+      maxAudioDuration = null; // no limit
+    } else {
+      // Large file: read in chunks up to a limit
+      console.log('[SubtitleEditor] Using chunked read strategy for large file');
+      const maxBytes = Math.min(fileSizeBytes, MAX_FULL_READ_MB * 1024 * 1024);
+      maxAudioDuration = fileSizeMB > MAX_PARTIAL_READ_MB ? 300 : 600; // 5 or 10 minutes
+      
+      // Read file in chunks to be more memory-efficient
+      const chunks = [];
+      let bytesRead = 0;
+      const chunkSize = 50 * 1024 * 1024; // 50MB chunks
+      
+      while (bytesRead < maxBytes) {
+        const end = Math.min(bytesRead + chunkSize, maxBytes);
+        const blob = State.videoFile.slice(bytesRead, end);
+        const buffer = await blob.arrayBuffer();
+        chunks.push(new Uint8Array(buffer));
+        bytesRead = end;
+        
+        const pct = 20 + (bytesRead / maxBytes) * 15;
+        updateLoading(pct, `Reading file: ${Math.round(bytesRead / (1024 * 1024))} MB / ${Math.round(maxBytes / (1024 * 1024))} MB`);
+      }
+      
+      // Combine chunks
+      const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+      videoData = new Uint8Array(totalLength);
+      let offset = 0;
+      for (const chunk of chunks) {
+        videoData.set(chunk, offset);
+        offset += chunk.length;
+      }
+      
+      console.log('[SubtitleEditor] Read', videoData.length, 'bytes (partial file)');
+    }
+    
+    console.log('[SubtitleEditor] Video data ready:', videoData.length, 'bytes');
     
     // Step 4: Write to FFmpeg
     updateLoading(40, 'Step 4: Writing to FFmpeg...');
     console.log('[SubtitleEditor] Step 4: Writing to FFmpeg...');
     await State.ffmpeg.writeFile('input.mp4', videoData);
-    console.log('[SubtitleEditor] Video written to FFmpeg');
+    
+    // Free the videoData memory immediately
+    videoData = null;
+    console.log('[SubtitleEditor] Video written to FFmpeg, memory freed');
     
     // Step 5: Extract audio
     updateLoading(50, 'Step 5: Extracting audio...');
     console.log('[SubtitleEditor] Step 5: Extracting audio...');
-    await State.ffmpeg.exec([
+    
+    const ffmpegArgs = [
       '-i', 'input.mp4',
       '-vn',
       '-acodec', 'pcm_s16le',
       '-ar', '16000',
-      '-ac', '1',
-      'audio.wav'
-    ]);
+      '-ac', '1'
+    ];
+    
+    // Add duration limit for large files
+    if (maxAudioDuration) {
+      ffmpegArgs.push('-t', String(maxAudioDuration));
+      console.log('[SubtitleEditor] Limiting audio extraction to', maxAudioDuration, 'seconds');
+    }
+    
+    ffmpegArgs.push('audio.wav');
+    
+    await State.ffmpeg.exec(ffmpegArgs);
     console.log('[SubtitleEditor] Audio extraction complete');
+    
+    // Delete input file immediately to free memory
+    updateLoading(55, 'Freeing memory...');
+    try {
+      await State.ffmpeg.deleteFile('input.mp4');
+      console.log('[SubtitleEditor] Input file deleted from FFmpeg');
+    } catch (e) {
+      console.warn('[SubtitleEditor] Could not delete input file:', e);
+    }
     
     // Step 6: Read audio
     updateLoading(60, 'Step 6: Reading audio...');
@@ -1101,13 +1186,17 @@ async function generateSubtitles() {
     const audioData = await State.ffmpeg.readFile('audio.wav');
     console.log('[SubtitleEditor] Audio read:', audioData.length, 'bytes');
     
-    // Cleanup FFmpeg files
-    await State.ffmpeg.deleteFile('input.mp4');
-    await State.ffmpeg.deleteFile('audio.wav');
+    // Delete audio file from FFmpeg
+    try {
+      await State.ffmpeg.deleteFile('audio.wav');
+    } catch (e) {
+      console.warn('[SubtitleEditor] Could not delete audio file:', e);
+    }
     
     // Step 7: Convert to Float32
     updateLoading(70, 'Step 7: Processing audio data...');
     console.log('[SubtitleEditor] Step 7: Converting audio to float32...');
+    
     // WAV header is 44 bytes, then 16-bit PCM samples
     const samples = new Int16Array(audioData.buffer, 44);
     const float32 = new Float32Array(samples.length);
@@ -1136,13 +1225,47 @@ async function generateSubtitles() {
     renderSubtitleList();
     DOM.exportSection.style.display = 'block';
     updateLoading(100, 'Done!');
-    setTimeout(hideLoading, 500);
+    
+    // Show warning if we only transcribed part of the video
+    if (maxAudioDuration) {
+      setTimeout(() => {
+        hideLoading();
+        alert(`Transcription complete!\n\nNote: Due to the large file size, only the first ${Math.round(maxAudioDuration / 60)} minutes were transcribed.\n\nFor full transcription of large videos, consider using desktop tools like OpenAI Whisper, MacWhisper, or Buzz.`);
+      }, 500);
+    } else {
+      setTimeout(hideLoading, 500);
+    }
     
   } catch (error) {
     console.error('[SubtitleEditor] FAILED at some step:', error);
     console.error('[SubtitleEditor] Error stack:', error.stack);
+    
+    // Reset FFmpeg state if it crashed
+    if (error.message && (error.message.includes('Aborted') || error.message.includes('memory'))) {
+      console.log('[SubtitleEditor] Resetting FFmpeg due to crash');
+      State.ffmpegLoaded = false;
+      State.ffmpeg = null;
+    }
+    
     hideLoading();
-    alert('Failed: ' + error.message + '\n\nCheck browser console (F12) for details.');
+    
+    // Provide more helpful error messages
+    let errorMsg = error.message || 'Unknown error';
+    if (errorMsg.includes('NotReadableError') || errorMsg.includes('permission')) {
+      errorMsg = 'Could not read the video file. This usually happens when:\n\n' +
+        '1. The file was moved or deleted\n' +
+        '2. Browser lost permission to access the file\n' +
+        '3. The file is too large for browser memory\n\n' +
+        'Please try selecting the file again, or use a smaller video.';
+    } else if (errorMsg.includes('Aborted') || errorMsg.includes('memory')) {
+      errorMsg = 'Browser ran out of memory.\n\n' +
+        'This video is too large for browser-based processing.\n\n' +
+        'Please try:\n' +
+        '1. A smaller/compressed video\n' +
+        '2. Desktop tools like OpenAI Whisper or MacWhisper';
+    }
+    
+    alert('Transcription failed:\n\n' + errorMsg);
   } finally {
     DOM.generateBtn.disabled = false;
   }
