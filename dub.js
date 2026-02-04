@@ -1047,67 +1047,265 @@ function processTranscriptionToSubtitles(result) {
 async function generateSubtitles() {
   if (!State.videoFile) return;
   
-  // Reset partial transcription state
-  State.partialTranscription = false;
-  State.transcriptionDurationLimit = null;
-  
-  DOM.generateBtn.disabled = true;
-  showLoading('Generating Subtitles', 'Initializing...');
-  
-  try {
-    // Check file size and warn user about large files
-    const fileSizeMB = Math.round(State.videoFile.size / (1024 * 1024));
-    if (isFileTooLarge(State.videoFile)) {
-      const suggestedMinutes = Math.round(getSuggestedDurationLimit(fileSizeMB) / 60);
-      console.log(`[SubtitleEditor] Large file (${fileSizeMB}MB), will transcribe first ${suggestedMinutes} minutes`);
-      updateLoading(5, `Large file detected. Will transcribe first ${suggestedMinutes} minutes...`);
-      await new Promise(resolve => setTimeout(resolve, 1500)); // Let user see the message
-    }
-    
-    // Load Whisper model
-    updateLoading(10, 'Loading AI model...');
-    await initWhisper((progress, message) => {
-      updateLoading(10 + progress * 0.2, message);
-    });
-    
-    // Extract audio from video
-    updateLoading(30, 'Extracting audio from video...');
-    const audioData = await extractAudioFromVideo(updateLoading);
-    
-    // Transcribe
-    updateLoading(50, 'Transcribing with AI...');
-    const result = await transcribeAudio(audioData, updateLoading);
-    
-    // Process into subtitles
-    updateLoading(90, 'Processing subtitles...');
-    State.subtitles = processTranscriptionToSubtitles(result);
-    
-    // Update UI
-    renderSubtitleList();
-    DOM.exportSection.style.display = 'block';
-    
-    updateLoading(100, 'Done!');
-    setTimeout(hideLoading, 500);
-    
-    console.log('[SubtitleEditor] Generated', State.subtitles.length, 'subtitles');
-    
-    // Notify user if partial transcription was used
-    if (State.partialTranscription) {
-      const minutes = Math.round(State.transcriptionDurationLimit / 60);
-      setTimeout(() => {
-        alert(
-          `Note: Due to the large file size, only the first ${minutes} minutes were transcribed.\n\n` +
-          `You can manually add subtitles for the remaining portion of the video using the "Add Subtitle" button.`
-        );
-      }, 600);
-    }
-  } catch (error) {
-    console.error('[SubtitleEditor] Transcription failed:', error);
-    hideLoading();
-    alert('Failed to generate subtitles: ' + error.message);
-  } finally {
-    DOM.generateBtn.disabled = false;
+  // Check if Web Speech API is available
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    alert('Your browser does not support speech recognition. Please use Chrome or Edge.');
+    return;
   }
+  
+  // Start the chunk-by-chunk transcription process
+  DOM.generateBtn.disabled = true;
+  State.subtitles = [];
+  State.nextSubtitleId = 1;
+  
+  // Start from beginning
+  DOM.videoPlayer.currentTime = 0;
+  
+  // Begin the interactive transcription
+  await transcribeNextChunk();
+}
+
+// Chunk-by-chunk transcription using Web Speech API
+const CHUNK_DURATION = 10; // 10 seconds per chunk
+
+async function transcribeNextChunk() {
+  const video = DOM.videoPlayer;
+  const startTime = video.currentTime;
+  const endTime = Math.min(startTime + CHUNK_DURATION, video.duration);
+  
+  // Check if we're done
+  if (startTime >= video.duration - 0.5) {
+    finishTranscription();
+    return;
+  }
+  
+  console.log(`[SubtitleEditor] Transcribing chunk: ${startTime.toFixed(1)}s - ${endTime.toFixed(1)}s`);
+  
+  // Show transcription UI
+  showChunkTranscriptionUI(startTime, endTime);
+  
+  // Start speech recognition and video playback
+  const result = await transcribeChunkWithSpeechAPI(startTime, endTime);
+  
+  // Show result for user review
+  showChunkReviewUI(startTime, endTime, result);
+}
+
+function showChunkTranscriptionUI(startTime, endTime) {
+  const totalDuration = DOM.videoPlayer.duration;
+  const progress = (startTime / totalDuration) * 100;
+  
+  // Update loading modal for chunk transcription
+  DOM.loadingTitle.textContent = 'Transcribing Video';
+  DOM.loadingMessage.innerHTML = `
+    <div style="text-align: center;">
+      <p>Listening to audio... <strong>Please wait ${CHUNK_DURATION} seconds</strong></p>
+      <p style="font-size: 0.9em; color: #888;">
+        Chunk: ${formatTime(startTime)} - ${formatTime(endTime)} 
+        (${Math.round(progress)}% complete)
+      </p>
+      <p style="font-size: 0.8em; color: #666; margin-top: 10px;">
+        🎤 Using browser speech recognition
+      </p>
+    </div>
+  `;
+  DOM.loadingProgressFill.style.width = `${progress}%`;
+  DOM.loadingPercent.textContent = `${Math.round(progress)}%`;
+  DOM.loadingModal.style.display = 'flex';
+}
+
+async function transcribeChunkWithSpeechAPI(startTime, endTime) {
+  return new Promise((resolve) => {
+    const video = DOM.videoPlayer;
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = false;
+    recognition.lang = 'en-US';
+    
+    let transcript = '';
+    let recognitionEnded = false;
+    
+    recognition.onresult = (event) => {
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        if (event.results[i].isFinal) {
+          transcript += event.results[i][0].transcript + ' ';
+        }
+      }
+      console.log('[SubtitleEditor] Speech result:', transcript);
+    };
+    
+    recognition.onerror = (event) => {
+      console.warn('[SubtitleEditor] Speech recognition error:', event.error);
+      // Continue even on error
+    };
+    
+    recognition.onend = () => {
+      recognitionEnded = true;
+      console.log('[SubtitleEditor] Speech recognition ended');
+    };
+    
+    // Seek to start position
+    video.currentTime = startTime;
+    
+    // Wait for seek to complete
+    video.onseeked = () => {
+      video.onseeked = null;
+      
+      // Start recognition and playback together
+      try {
+        recognition.start();
+      } catch (e) {
+        console.warn('[SubtitleEditor] Could not start recognition:', e);
+      }
+      
+      video.play();
+      
+      // Stop after chunk duration
+      setTimeout(() => {
+        video.pause();
+        if (!recognitionEnded) {
+          try {
+            recognition.stop();
+          } catch (e) {}
+        }
+        
+        // Give a moment for final results
+        setTimeout(() => {
+          resolve(transcript.trim());
+        }, 500);
+      }, (endTime - startTime) * 1000);
+    };
+    
+    // Trigger seek
+    if (Math.abs(video.currentTime - startTime) < 0.1) {
+      video.onseeked();
+    }
+  });
+}
+
+function showChunkReviewUI(startTime, endTime, transcript) {
+  const totalDuration = DOM.videoPlayer.duration;
+  const progress = (endTime / totalDuration) * 100;
+  const isLastChunk = endTime >= totalDuration - 0.5;
+  
+  // Hide loading, show review dialog
+  DOM.loadingModal.style.display = 'none';
+  
+  // Create review modal
+  const reviewModal = document.createElement('div');
+  reviewModal.className = 'modal-overlay';
+  reviewModal.id = 'chunk-review-modal';
+  reviewModal.innerHTML = `
+    <div class="modal-content" style="max-width: 600px;">
+      <h2>Review Transcription</h2>
+      <p style="color: #888; margin-bottom: 15px;">
+        ${formatTime(startTime)} - ${formatTime(endTime)} 
+        (${Math.round(progress)}% of video)
+      </p>
+      
+      <div style="margin-bottom: 15px;">
+        <button id="chunk-replay-btn" class="secondary-btn" style="margin-right: 10px;">
+          🔄 Replay Chunk
+        </button>
+        <span style="color: #666; font-size: 0.9em;">Listen again to verify</span>
+      </div>
+      
+      <div style="margin-bottom: 20px;">
+        <label style="display: block; margin-bottom: 5px; font-weight: bold;">Transcription:</label>
+        <textarea id="chunk-transcript" rows="4" style="width: 100%; padding: 10px; font-size: 14px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; color: #fff;">${escapeHtml(transcript) || '(No speech detected)'}</textarea>
+        <p style="color: #666; font-size: 0.8em; margin-top: 5px;">
+          Edit the text if needed, or leave empty to skip this chunk.
+        </p>
+      </div>
+      
+      <div style="display: flex; gap: 10px; justify-content: flex-end;">
+        <button id="chunk-skip-btn" class="secondary-btn">Skip Chunk</button>
+        <button id="chunk-accept-btn" class="primary-btn">
+          ${isLastChunk ? '✓ Finish' : '✓ Accept & Continue'}
+        </button>
+      </div>
+      
+      <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #444;">
+        <button id="chunk-stop-btn" style="background: none; border: none; color: #888; cursor: pointer; font-size: 0.9em;">
+          ⏹ Stop transcription here (keep subtitles so far)
+        </button>
+      </div>
+    </div>
+  `;
+  
+  document.body.appendChild(reviewModal);
+  
+  // Focus the textarea
+  const textarea = document.getElementById('chunk-transcript');
+  textarea.focus();
+  textarea.select();
+  
+  // Replay button
+  document.getElementById('chunk-replay-btn').onclick = () => {
+    DOM.videoPlayer.currentTime = startTime;
+    DOM.videoPlayer.play();
+    setTimeout(() => {
+      DOM.videoPlayer.pause();
+    }, (endTime - startTime) * 1000);
+  };
+  
+  // Skip button
+  document.getElementById('chunk-skip-btn').onclick = () => {
+    reviewModal.remove();
+    DOM.videoPlayer.currentTime = endTime;
+    transcribeNextChunk();
+  };
+  
+  // Accept button
+  document.getElementById('chunk-accept-btn').onclick = () => {
+    const text = document.getElementById('chunk-transcript').value.trim();
+    
+    // Add subtitle if there's text
+    if (text) {
+      State.subtitles.push({
+        id: State.nextSubtitleId++,
+        start: startTime,
+        end: endTime,
+        text: text
+      });
+      renderSubtitleList();
+    }
+    
+    reviewModal.remove();
+    
+    if (isLastChunk) {
+      finishTranscription();
+    } else {
+      DOM.videoPlayer.currentTime = endTime;
+      transcribeNextChunk();
+    }
+  };
+  
+  // Stop button
+  document.getElementById('chunk-stop-btn').onclick = () => {
+    reviewModal.remove();
+    finishTranscription();
+  };
+}
+
+function finishTranscription() {
+  DOM.generateBtn.disabled = false;
+  DOM.loadingModal.style.display = 'none';
+  
+  // Make sure list is rendered
+  renderSubtitleList();
+  
+  if (State.subtitles.length > 0) {
+    DOM.exportSection.style.display = 'block';
+    alert(`Transcription complete! Created ${State.subtitles.length} subtitle(s).\n\nYou can now edit the timing and text, then export.`);
+  } else {
+    alert('No subtitles were created. You can add them manually using the + button.');
+  }
+  
+  console.log('[SubtitleEditor] Transcription finished with', State.subtitles.length, 'subtitles');
 }
 
 // ============================================================================
