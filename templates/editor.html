@@ -450,6 +450,14 @@
               <option value="#e2e8f0">Light Gray</option>
             </select>
           </div>
+          
+          <div class="setting-group">
+            <label>Word Highlighting</label>
+            <select id="word-highlighting">
+              <option value="true">On (slower encode)</option>
+              <option value="false">Off (much faster)</option>
+            </select>
+          </div>
         </div>
       </div>
     </div>
@@ -486,6 +494,7 @@
       position: 'bottom',
       highlight_color: '#fbbf24',
       text_color: 'white',
+      word_highlighting: true,
     };
     let currentSubtitleIndex = -1;
     let currentWordIndex = -1;
@@ -721,6 +730,10 @@
     textColorSelect.addEventListener('change', () => {
       settings.text_color = textColorSelect.value;
       updateSubtitleStyle();
+    });
+
+    document.getElementById('word-highlighting').addEventListener('change', (e) => {
+      settings.word_highlighting = e.target.value === 'true';
     });
 
     // Video time update - use requestAnimationFrame for smoother updates

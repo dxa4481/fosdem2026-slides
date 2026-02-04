@@ -102,6 +102,7 @@ state = {
         'position': 'bottom',  # top, middle, bottom
         'text_color': 'white',
         'highlight_color': '#fbbf24',  # Yellow - matches presenter mode
+        'word_highlighting': True,  # If False, much faster encoding (no per-word events)
     },
     'output_path': None,
     'approved': False,
@@ -309,17 +310,21 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         s = seconds % 60
         return f"{h}:{m:02d}:{s:05.2f}"
     
-    # Generate events with word-by-word highlighting
+    # Check if word highlighting is enabled
+    word_highlighting = settings.get('word_highlighting', True)
+    
+    # Generate events
     for sub in subtitles:
         words = sub.get('words', [])
-        if not words:
-            # Simple subtitle without word timing
+        
+        # Simple mode: one subtitle event per segment (FAST)
+        if not word_highlighting or not words:
             start_time = format_time(sub['start'])
             end_time = format_time(sub['end'])
             ass_content += f"Dialogue: 0,{start_time},{end_time},Default,,0,0,0,,{sub['text']}\n"
             continue
         
-        # Create karaoke-style word highlighting
+        # Word highlighting mode: one event per word (SLOW but pretty)
         for i, word_info in enumerate(words):
             word_start = word_info['start']
             word_end = word_info['end']
@@ -352,6 +357,7 @@ def burn_subtitles(video_path: str, ass_path: str, output_path: str) -> bool:
     Burn subtitles into video using FFmpeg with progress reporting.
     """
     print(f"\n🎬 Burning subtitles into video...")
+    print(f"   This may take a while for long videos...")
     
     # Get video duration for progress
     duration = get_video_duration(video_path)
@@ -365,58 +371,80 @@ def burn_subtitles(video_path: str, ass_path: str, output_path: str) -> bool:
         '-vf', f"ass='{ass_escaped}'",
         '-c:a', 'copy',
         '-c:v', 'libx264',
-        '-preset', 'medium',
+        '-preset', 'fast',  # Faster encoding
         '-crf', '23',
-        '-progress', 'pipe:1',  # Output progress to stdout
         output_path
     ]
     
+    print(f"   Running FFmpeg (check Activity Monitor if it seems stuck)...")
+    
     try:
-        import re
+        # Use simpler subprocess call - progress parsing can cause hangs
+        # For long videos, just let it run and show a spinner
+        import select
+        
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            universal_newlines=True
         )
         
-        # Parse progress from FFmpeg
-        current_time = 0
-        while True:
-            line = process.stdout.readline()
-            if not line and process.poll() is not None:
-                break
-            
-            # Parse "out_time_ms" or "out_time" from progress output
-            if 'out_time_ms=' in line:
-                try:
-                    ms = int(line.split('=')[1].strip())
-                    current_time = ms / 1000000.0  # Convert microseconds to seconds
-                except:
-                    pass
-            elif 'out_time=' in line:
-                try:
-                    time_str = line.split('=')[1].strip()
-                    parts = time_str.split(':')
-                    if len(parts) == 3:
-                        h, m, s = parts
-                        current_time = int(h) * 3600 + int(m) * 60 + float(s)
-                except:
-                    pass
-            
-            # Update progress bar
-            if duration > 0 and current_time > 0:
-                progress = min(1.0, current_time / duration)
-                print_progress_bar(progress, prefix='Encoding', suffix=f'{int(current_time)}s / {int(duration)}s')
+        # Read stderr in a non-blocking way to prevent buffer deadlock
+        # and show periodic progress
+        start_time = time.time()
+        last_update = 0
+        stderr_data = []
         
+        while process.poll() is None:
+            # Check if there's data to read from stderr
+            try:
+                # Use select with timeout to avoid blocking
+                import selectors
+                sel = selectors.DefaultSelector()
+                sel.register(process.stderr, selectors.EVENT_READ)
+                ready = sel.select(timeout=1.0)
+                sel.close()
+                
+                if ready:
+                    chunk = process.stderr.read1(4096) if hasattr(process.stderr, 'read1') else process.stderr.read(4096)
+                    if chunk:
+                        stderr_data.append(chunk)
+                        # Try to parse time from FFmpeg stderr
+                        text = chunk.decode('utf-8', errors='ignore')
+                        if 'time=' in text:
+                            try:
+                                time_match = text.split('time=')[1].split()[0]
+                                parts = time_match.split(':')
+                                if len(parts) == 3:
+                                    h, m, s = parts
+                                    current = int(h) * 3600 + int(m) * 60 + float(s)
+                                    if duration > 0:
+                                        pct = min(100, (current / duration) * 100)
+                                        elapsed = time.time() - start_time
+                                        print(f"\r   Encoding: {pct:.1f}% ({int(current)}s / {int(duration)}s) - elapsed: {int(elapsed)}s   ", end='', flush=True)
+                            except:
+                                pass
+            except:
+                time.sleep(0.5)
+            
+            # Show we're still alive every 10 seconds
+            elapsed = time.time() - start_time
+            if elapsed - last_update > 10:
+                last_update = elapsed
+                if duration > 0:
+                    print(f"\r   Encoding in progress... elapsed: {int(elapsed)}s   ", end='', flush=True)
+        
+        # Get final status
         process.wait()
-        
-        # Clear progress line
-        print()
+        print()  # New line after progress
         
         if process.returncode != 0:
-            stderr = process.stderr.read()
-            print(f"   FFmpeg error: {stderr}")
+            stderr_text = b''.join(stderr_data).decode('utf-8', errors='ignore')
+            print(f"   FFmpeg error (code {process.returncode}):")
+            # Show last few lines of error
+            lines = stderr_text.strip().split('\n')
+            for line in lines[-10:]:
+                print(f"   {line}")
             return False
         
         print(f"   ✅ Output saved to: {output_path}")
@@ -424,6 +452,8 @@ def burn_subtitles(video_path: str, ass_path: str, output_path: str) -> bool:
         
     except Exception as e:
         print(f"   Error: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
