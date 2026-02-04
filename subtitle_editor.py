@@ -234,45 +234,60 @@ def words_to_subtitles(words: list, max_words: int = 8, max_duration: float = 4.
 def generate_ass_subtitles(subtitles: list, settings: dict, video_width: int = 1920, video_height: int = 1080) -> str:
     """
     Generate ASS subtitle file with word-by-word highlighting.
-    Styled to match the presenter mode look (Montserrat, glow effects, no harsh outline).
+    Styled to match the HTML preview exactly.
     """
     font_size = settings.get('font_size', 42)
     position = settings.get('position', 'bottom')
     text_color = settings.get('text_color', 'white')
     highlight_color = settings.get('highlight_color', '#fbbf24')
     
-    # Convert hex color to ASS BGR format
-    def hex_to_ass(hex_color):
+    # Scale font size relative to 1080p - the preview is designed for screen display
+    # ASS font sizes are absolute, so we need to scale based on video resolution
+    scale_factor = video_height / 1080
+    scaled_font_size = int(font_size * scale_factor)
+    
+    # Convert hex color to ASS BGR format (with alpha prefix)
+    def hex_to_ass(hex_color, alpha='00'):
         if hex_color.startswith('#'):
             hex_color = hex_color[1:]
         if len(hex_color) == 6:
             r, g, b = hex_color[0:2], hex_color[2:4], hex_color[4:6]
-            return f"&H00{b.upper()}{g.upper()}{r.upper()}"
-        return "&H00FFFFFF"
+            return f"&H{alpha}{b.upper()}{g.upper()}{r.upper()}"
+        return f"&H{alpha}FFFFFF"
     
-    def color_name_to_ass(name):
-        colors = {
-            'white': '&H00FFFFFF',
-            '#e2e8f0': '&H00F0E8E2',  # Light gray
-        }
+    def color_name_to_ass(name, alpha='00'):
+        if name == 'white':
+            return f"&H{alpha}FFFFFF"
+        if name == '#e2e8f0':
+            return f"&H{alpha}F0E8E2"
         if name.startswith('#'):
-            return hex_to_ass(name)
-        return colors.get(name, '&H00FFFFFF')
+            return hex_to_ass(name, alpha)
+        return f"&H{alpha}FFFFFF"
     
     # Position: 2=bottom center, 5=middle center, 8=top center
     alignment = {'bottom': 2, 'middle': 5, 'top': 8}.get(position, 2)
     
-    # Vertical margin based on position
-    margin_v = 60 if position in ('bottom', 'top') else 0
+    # Vertical margin based on position (scaled)
+    margin_v = int(50 * scale_factor) if position in ('bottom', 'top') else 0
     
     primary_color = color_name_to_ass(text_color)
     highlight_color_ass = hex_to_ass(highlight_color)
     
-    # Dimmed color for upcoming words (60% opacity white)
-    dim_color = '&H66FFFFFF'  # Semi-transparent white
+    # Dimmed color for upcoming words (60% opacity = alpha A0)
+    dim_color = color_name_to_ass(text_color, 'A0')
     
-    # Style: Montserrat Bold, soft shadow (no harsh outline), slight blur for glow
-    # BorderStyle: 1 = outline+shadow, Outline: 0 = no outline, Shadow: 2 = soft shadow
+    # Semi-transparent black background (B0 = ~70% opacity)
+    back_color = '&HB0000000'
+    
+    # Style breakdown:
+    # - BorderStyle 4 = shadow + background box drawn behind text
+    # - Outline 0 = no character outline
+    # - Shadow 0 = no drop shadow (we don't want the offset shadow)
+    # - BackColour with alpha gives us the semi-transparent box
+    # 
+    # Actually, BorderStyle 3 = opaque box is better for our case
+    # We use it with a semi-transparent BackColour
+    
     ass_content = f"""[Script Info]
 Title: Video Subtitles
 ScriptType: v4.00+
@@ -282,7 +297,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Montserrat,{font_size},{primary_color},&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,0,3,{alignment},10,10,{margin_v},1
+Style: Default,Arial,{scaled_font_size},{primary_color},&H000000FF,&H00000000,{back_color},1,0,0,0,100,100,0,0,3,0,0,{alignment},20,20,{margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -305,28 +320,23 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             continue
         
         # Create karaoke-style word highlighting
-        # For each word, we show all words with appropriate styling
         for i, word_info in enumerate(words):
             word_start = word_info['start']
             word_end = word_info['end']
             
-            # Build the line with word styling:
-            # - Current word: highlight color, slightly larger
-            # - Spoken words: full white
-            # - Upcoming words: dimmed
+            # Build the line with word styling
             parts = []
             for j, w in enumerate(words):
                 word_text = w['word']
                 if j == i:
-                    # Current word - highlight color with scale effect
-                    # Using \c for primary color, \fscx\fscy for scale
-                    parts.append(r"{\c" + highlight_color_ass[2:] + r"\fscx110\fscy110}" + word_text + r"{\c" + primary_color[2:] + r"\fscx100\fscy100}")
+                    # Current word - highlight color, slightly larger
+                    parts.append(r"{\c" + highlight_color_ass[2:] + r"\fscx110\fscy110}" + word_text + r"{\r}")
                 elif j < i:
-                    # Already spoken - full brightness
+                    # Already spoken - full white
                     parts.append(word_text)
                 else:
-                    # Upcoming - dimmed
-                    parts.append(r"{\c" + dim_color[2:] + r"}" + word_text + r"{\c" + primary_color[2:] + r"}")
+                    # Upcoming - dimmed (semi-transparent)
+                    parts.append(r"{\c" + dim_color[2:] + r"}" + word_text + r"{\r}")
             
             text = ' '.join(parts)
             start_time = format_time(word_start)
