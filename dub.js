@@ -1047,23 +1047,163 @@ function processTranscriptionToSubtitles(result) {
 async function generateSubtitles() {
   if (!State.videoFile) return;
   
-  // Check if Web Speech API is available
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRecognition) {
-    alert('Your browser does not support speech recognition. Please use Chrome or Edge.');
-    return;
+  const fileSizeMB = Math.round(State.videoFile.size / (1024 * 1024));
+  
+  // For very large files, we can't process in-browser reliably
+  if (fileSizeMB > 500) {
+    const proceed = confirm(
+      `This video is ${fileSizeMB}MB which is too large for reliable browser-based transcription.\n\n` +
+      `Options:\n` +
+      `1. Click OK to try anyway (may crash or only transcribe part of the video)\n` +
+      `2. Click Cancel and compress the video first (recommended)\n` +
+      `3. Use a desktop transcription tool like Whisper or otter.ai\n\n` +
+      `Tip: A 10-minute video compressed to 720p is usually under 200MB.`
+    );
+    if (!proceed) return;
   }
   
-  // Start the chunk-by-chunk transcription process
   DOM.generateBtn.disabled = true;
-  State.subtitles = [];
-  State.nextSubtitleId = 1;
+  showLoading('Generating Subtitles', 'Initializing...');
   
-  // Start from beginning
-  DOM.videoPlayer.currentTime = 0;
+  try {
+    // Load Whisper model
+    updateLoading(5, 'Loading Whisper AI model (first time may take a minute)...');
+    await initWhisper((progress, message) => {
+      updateLoading(5 + progress * 0.15, message);
+    });
+    
+    // Extract audio - use simpler approach for smaller files
+    updateLoading(20, 'Extracting audio from video...');
+    const audioData = await extractAudioSimple(updateLoading);
+    
+    // Transcribe
+    updateLoading(50, 'Transcribing with Whisper AI...');
+    const result = await transcribeAudio(audioData, updateLoading);
+    
+    // Process into subtitles
+    updateLoading(90, 'Processing subtitles...');
+    State.subtitles = processTranscriptionToSubtitles(result);
+    
+    // Update UI
+    renderSubtitleList();
+    DOM.exportSection.style.display = 'block';
+    
+    updateLoading(100, 'Done!');
+    setTimeout(hideLoading, 500);
+    
+    console.log('[SubtitleEditor] Generated', State.subtitles.length, 'subtitles');
+    
+  } catch (error) {
+    console.error('[SubtitleEditor] Transcription failed:', error);
+    hideLoading();
+    alert('Transcription failed: ' + error.message + '\n\nTry a smaller video file or use a desktop transcription tool.');
+  } finally {
+    DOM.generateBtn.disabled = false;
+  }
+}
+
+// Simpler audio extraction - just use FFmpeg directly without the complex large file handling
+async function extractAudioSimple(progressCallback) {
+  if (!State.ffmpegLoaded) {
+    await initFFmpeg(progressCallback);
+  }
   
-  // Begin the interactive transcription
-  await transcribeNextChunk();
+  const ffmpeg = State.ffmpeg;
+  const file = State.videoFile;
+  const fileSizeMB = Math.round(file.size / (1024 * 1024));
+  
+  // For files over 300MB, only process first portion to avoid memory issues
+  const maxProcessMB = 300;
+  const processFullFile = fileSizeMB <= maxProcessMB;
+  
+  if (progressCallback) {
+    if (processFullFile) {
+      progressCallback(22, `Reading video file (${fileSizeMB}MB)...`);
+    } else {
+      progressCallback(22, `Reading first ${maxProcessMB}MB of video (file is ${fileSizeMB}MB)...`);
+    }
+  }
+  
+  // Read file (or portion of it)
+  const bytesToRead = processFullFile ? file.size : maxProcessMB * 1024 * 1024;
+  
+  let fileData;
+  try {
+    const blob = file.slice(0, bytesToRead);
+    const buffer = await blob.arrayBuffer();
+    fileData = new Uint8Array(buffer);
+  } catch (e) {
+    throw new Error(`Failed to read video file: ${e.message}`);
+  }
+  
+  if (progressCallback) progressCallback(30, 'Writing to FFmpeg...');
+  
+  try {
+    await ffmpeg.writeFile('input.mp4', fileData);
+  } catch (e) {
+    throw new Error(`FFmpeg write failed: ${e.message}`);
+  }
+  
+  // Free memory
+  fileData = null;
+  
+  if (progressCallback) progressCallback(35, 'Extracting audio (this may take a moment)...');
+  
+  // Extract audio - limit to 10 minutes for safety
+  const maxDuration = processFullFile ? 600 : 300; // 10 min for full, 5 min for partial
+  
+  try {
+    await ffmpeg.exec([
+      '-i', 'input.mp4',
+      '-t', String(maxDuration),
+      '-vn',
+      '-acodec', 'pcm_s16le',
+      '-ar', '16000',
+      '-ac', '1',
+      'audio.wav'
+    ]);
+  } catch (e) {
+    // Try to clean up
+    try { await ffmpeg.deleteFile('input.mp4'); } catch (ignored) {}
+    State.ffmpegLoaded = false;
+    State.ffmpeg = null;
+    throw new Error(`Audio extraction failed. The video may be too large or corrupted.`);
+  }
+  
+  // Delete input before reading output to free memory
+  if (progressCallback) progressCallback(42, 'Reading extracted audio...');
+  
+  try {
+    await ffmpeg.deleteFile('input.mp4');
+  } catch (e) {
+    console.warn('Could not delete input file:', e);
+  }
+  
+  let audioData;
+  try {
+    audioData = await ffmpeg.readFile('audio.wav');
+  } catch (e) {
+    State.ffmpegLoaded = false;
+    State.ffmpeg = null;
+    throw new Error(`Failed to read extracted audio. Try a smaller video.`);
+  }
+  
+  // Clean up
+  try {
+    await ffmpeg.deleteFile('audio.wav');
+  } catch (e) {
+    console.warn('Could not delete audio file:', e);
+  }
+  
+  if (progressCallback) progressCallback(48, 'Audio extracted successfully');
+  
+  // Mark as partial if we didn't process the full file
+  if (!processFullFile) {
+    State.partialTranscription = true;
+    State.transcriptionDurationLimit = maxDuration;
+  }
+  
+  return audioData;
 }
 
 // Chunk-by-chunk transcription using Web Speech API
