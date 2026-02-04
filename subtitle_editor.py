@@ -525,7 +525,7 @@ def update_settings():
 
 @app.route('/api/approve', methods=['POST'])
 def approve():
-    """Approve and export video with subtitles."""
+    """Approve and export video with subtitles (old ASS method - kept for fallback)."""
     data = request.json
     state['subtitles'] = data.get('subtitles', state['subtitles'])
     state['settings'].update(data.get('settings', {}))
@@ -551,6 +551,87 @@ def approve():
         return jsonify({'status': 'ok', 'output': str(output_path)})
     else:
         return jsonify({'status': 'error', 'message': 'FFmpeg failed'}), 500
+
+
+@app.route('/api/composite', methods=['POST'])
+def composite_overlay():
+    """Composite subtitle overlay video onto original video.
+    
+    This method uses a WebM with transparency recorded from the browser,
+    ensuring the subtitles look EXACTLY like the preview.
+    """
+    if 'overlay' not in request.files:
+        return jsonify({'status': 'error', 'message': 'No overlay file provided'}), 400
+    
+    overlay_file = request.files['overlay']
+    
+    # Save overlay to temp file
+    with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as f:
+        overlay_file.save(f.name)
+        overlay_path = f.name
+    
+    print(f"\n🎬 Compositing subtitle overlay...")
+    print(f"   Overlay file: {overlay_path}")
+    
+    video_path = Path(state['video_path'])
+    output_path = video_path.parent / f"{video_path.stem}_subtitled{video_path.suffix}"
+    
+    # FFmpeg command to overlay WebM with alpha on top of original video
+    # The overlay filter composites the subtitle video on top
+    cmd = [
+        'ffmpeg', '-y',
+        '-i', str(video_path),      # Original video
+        '-i', overlay_path,          # Subtitle overlay (WebM with alpha)
+        '-filter_complex', '[0:v][1:v]overlay=0:0:format=auto[out]',
+        '-map', '[out]',
+        '-map', '0:a?',              # Keep original audio if present
+        '-c:v', 'libx264',
+        '-preset', 'fast',
+        '-crf', '23',
+        '-c:a', 'copy',
+        str(output_path)
+    ]
+    
+    print(f"   Running: {' '.join(cmd)}")
+    
+    try:
+        # Get video duration for progress
+        duration = get_video_duration(str(video_path))
+        
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        
+        # Simple progress monitoring
+        start_time = time.time()
+        while process.poll() is None:
+            time.sleep(1)
+            elapsed = time.time() - start_time
+            print(f"\r   Compositing... elapsed: {int(elapsed)}s", end='', flush=True)
+        
+        print()
+        
+        # Clean up overlay
+        os.unlink(overlay_path)
+        
+        if process.returncode != 0:
+            stderr = process.stderr.read().decode('utf-8', errors='ignore')
+            print(f"   FFmpeg error: {stderr[-500:]}")  # Last 500 chars
+            return jsonify({'status': 'error', 'message': 'FFmpeg compositing failed'}), 500
+        
+        print(f"   ✅ Output saved to: {output_path}")
+        state['output_path'] = str(output_path)
+        
+        return jsonify({'status': 'ok', 'output': str(output_path)})
+        
+    except Exception as e:
+        # Clean up on error
+        if os.path.exists(overlay_path):
+            os.unlink(overlay_path)
+        print(f"   Error: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
 @app.route('/api/export-srt')
