@@ -3,6 +3,10 @@
 <head>
   <meta charset="utf-8">
   <title>Video Subtitle Editor</title>
+  <!-- Montserrat font for presenter-mode style subtitles -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="dub.css">
 </head>
 <body>
@@ -52,6 +56,7 @@
     <div id="editor-panel">
       <div id="editor-header">
         <h2>Subtitles</h2>
+        <span id="edit-indicator" class="edit-indicator" style="display: none;">Live Preview</span>
         <div id="editor-actions">
           <button id="add-subtitle-btn" class="icon-btn" title="Add Subtitle">
             <span>➕</span>
@@ -84,13 +89,14 @@
       <!-- Export Section -->
       <div id="export-section" style="display: none;">
         <h3>Export Video</h3>
+        <p class="export-note">Subtitles will be burned in using the same presenter-mode style shown in preview.</p>
         <div class="export-options">
           <div class="option-group">
             <label for="font-size-select">Subtitle Size</label>
             <select id="font-size-select">
-              <option value="small">Small</option>
-              <option value="medium" selected>Medium</option>
-              <option value="large">Large</option>
+              <option value="small">Small (720p optimized)</option>
+              <option value="medium" selected>Medium (1080p optimized)</option>
+              <option value="large">Large (4K optimized)</option>
               <option value="xlarge">Extra Large</option>
             </select>
           </div>

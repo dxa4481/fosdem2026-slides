@@ -23,7 +23,8 @@ const State = {
   ffmpeg: null,
   ffmpegLoaded: false,
   currentSubtitleIndex: -1,
-  nextSubtitleId: 1
+  nextSubtitleId: 1,
+  isManualPreview: false
 };
 
 // ============================================================================
@@ -56,7 +57,8 @@ const DOM = {
   loadingTitle: null,
   loadingMessage: null,
   loadingProgressFill: null,
-  loadingPercent: null
+  loadingPercent: null,
+  editIndicator: null
 };
 
 // ============================================================================
@@ -90,6 +92,7 @@ function initDOM() {
   DOM.loadingMessage = document.getElementById('loading-message');
   DOM.loadingProgressFill = document.getElementById('loading-progress-fill');
   DOM.loadingPercent = document.getElementById('loading-percent');
+  DOM.editIndicator = document.getElementById('edit-indicator');
 }
 
 function initEventListeners() {
@@ -463,7 +466,12 @@ function updateSubtitleDisplay() {
   
   // Update display
   if (activeSubtitle) {
-    displaySubtitle(activeSubtitle.text);
+    // Calculate progress through the subtitle for word highlighting
+    const subtitleDuration = activeSubtitle.end - activeSubtitle.start;
+    const timeIntoSubtitle = currentTime - activeSubtitle.start;
+    const progress = Math.min(1, timeIntoSubtitle / subtitleDuration);
+    
+    displaySubtitle(activeSubtitle.text, progress);
     
     // Highlight active subtitle in list
     if (activeIndex !== State.currentSubtitleIndex) {
@@ -471,7 +479,7 @@ function updateSubtitleDisplay() {
       highlightActiveSubtitle(activeSubtitle.id);
     }
   } else {
-    DOM.subtitleText.textContent = '';
+    clearSubtitleDisplay();
     if (State.currentSubtitleIndex !== -1) {
       State.currentSubtitleIndex = -1;
       highlightActiveSubtitle(null);
@@ -479,15 +487,40 @@ function updateSubtitleDisplay() {
   }
 }
 
-function displaySubtitle(text) {
-  // Create word spans with highlighting effect
+function displaySubtitle(text, highlightProgress = 1, isManualPreview = false) {
+  // Create word spans with highlighting effect - matching presenter mode exactly
   const words = text.split(' ').filter(w => w.length > 0);
+  const highlightedWordIndex = Math.floor(words.length * highlightProgress);
+  
   const wordSpans = words.map((word, index) => {
-    const className = index === words.length - 1 ? 'word current' : 'word spoken';
+    let className = 'word';
+    if (index < highlightedWordIndex) {
+      className += ' spoken';
+    } else if (index === highlightedWordIndex) {
+      className += ' current';
+    } else {
+      className += ' upcoming';
+    }
     return `<span class="${className}">${escapeHtml(word)}</span>`;
   }).join(' ');
   
   DOM.subtitleText.innerHTML = wordSpans;
+  DOM.subtitleText.classList.add('has-highlight');
+  
+  // Show edit indicator for manual previews
+  if (isManualPreview && DOM.editIndicator) {
+    DOM.editIndicator.style.display = 'inline-block';
+    State.isManualPreview = true;
+  }
+}
+
+function clearSubtitleDisplay() {
+  DOM.subtitleText.innerHTML = '';
+  DOM.subtitleText.classList.remove('has-highlight');
+  if (DOM.editIndicator) {
+    DOM.editIndicator.style.display = 'none';
+  }
+  State.isManualPreview = false;
 }
 
 function escapeHtml(text) {
@@ -544,7 +577,8 @@ function createSubtitleItem(subtitle, index) {
     </div>
     <textarea class="subtitle-text-input">${escapeHtml(subtitle.text)}</textarea>
     <div class="subtitle-item-actions">
-      <button class="subtitle-action-btn go-to-btn">▶ Go to</button>
+      <button class="subtitle-action-btn preview-btn">👁️ Preview</button>
+      <button class="subtitle-action-btn go-to-btn">▶ Play from here</button>
       <button class="subtitle-action-btn split-btn">✂️ Split</button>
     </div>
   `;
@@ -554,6 +588,7 @@ function createSubtitleItem(subtitle, index) {
   const endInput = item.querySelector('.end-time');
   const textInput = item.querySelector('.subtitle-text-input');
   const deleteBtn = item.querySelector('.subtitle-delete-btn');
+  const previewBtn = item.querySelector('.preview-btn');
   const goToBtn = item.querySelector('.go-to-btn');
   const splitBtn = item.querySelector('.split-btn');
   
@@ -568,10 +603,31 @@ function createSubtitleItem(subtitle, index) {
   
   textInput.addEventListener('input', () => {
     subtitle.text = textInput.value;
+    // Live preview: update the video preview in real-time as you type
+    displaySubtitle(subtitle.text, 0.5, true);
+  });
+  
+  // Show preview when focusing on a subtitle
+  textInput.addEventListener('focus', () => {
+    displaySubtitle(subtitle.text, 0.5, true);
+    item.classList.add('active');
+  });
+  
+  textInput.addEventListener('blur', () => {
+    // Only clear if video is paused
+    if (DOM.videoPlayer.paused) {
+      // Keep the last preview visible for a moment
+    }
   });
   
   deleteBtn.addEventListener('click', () => {
     deleteSubtitle(subtitle.id);
+  });
+  
+  previewBtn.addEventListener('click', () => {
+    // Show this subtitle's text on the video without changing playback position
+    displaySubtitle(subtitle.text, 0.5, true);
+    highlightActiveSubtitle(subtitle.id);
   });
   
   goToBtn.addEventListener('click', () => {
