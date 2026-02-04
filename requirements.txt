@@ -1,0 +1,12 @@
+# Video Subtitle Editor - Python Dependencies
+
+# Whisper transcription with GPU support
+faster-whisper>=1.0.0
+
+# Web server for the review interface
+flask>=2.3.0
+
+# Note: FFmpeg must be installed separately
+# On Ubuntu: sudo apt install ffmpeg
+# On macOS: brew install ffmpeg
+# On Windows: Download from https://ffmpeg.org/download.html

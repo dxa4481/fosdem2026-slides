@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Video Subtitle Editor</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1a1a2e;
+      color: white;
+      min-height: 100vh;
+    }
+
+    .container {
+      display: flex;
+      height: 100vh;
+    }
+
+    /* Left panel - Video */
+    .video-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: #0d0d1a;
+      min-width: 0;
+    }
+
+    .video-wrapper {
+      flex: 1;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      min-height: 0;
+    }
+
+    .video-container {
+      position: relative;
+      max-width: 100%;
+      max-height: 100%;
+    }
+
+    video {
+      max-width: 100%;
+      max-height: 100%;
+      display: block;
+      background: black;
+    }
+
+    .subtitle-overlay {
+      position: absolute;
+      left: 0;
+      right: 0;
+      display: flex;
+      justify-content: center;
+      padding: 20px;
+      pointer-events: none;
+      transition: all 0.2s;
+    }
+
+    .subtitle-overlay.bottom {
+      bottom: 60px;
+    }
+
+    .subtitle-overlay.middle {
+      top: 50%;
+      transform: translateY(-50%);
+    }
+
+    .subtitle-overlay.top {
+      top: 20px;
+    }
+
+    .subtitle-text {
+      background: rgba(0, 0, 0, 0.7);
+      padding: 8px 16px;
+      border-radius: 4px;
+      text-align: center;
+      max-width: 90%;
+      text-shadow: 2px 2px 2px rgba(0,0,0,0.8);
+    }
+
+    .subtitle-text .word {
+      display: inline;
+      transition: color 0.1s;
+    }
+
+    .subtitle-text .word.highlight {
+      color: yellow;
+    }
+
+    .controls-bar {
+      background: #16213e;
+      padding: 15px 20px;
+      border-top: 1px solid rgba(255,255,255,0.1);
+    }
+
+    .settings-row {
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .setting-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .setting-group label {
+      font-size: 0.85rem;
+      color: rgba(255,255,255,0.7);
+    }
+
+    select, input[type="range"] {
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.2);
+      color: white;
+      padding: 6px 10px;
+      border-radius: 4px;
+      font-size: 0.9rem;
+    }
+
+    select:focus, input:focus {
+      outline: none;
+      border-color: #8b5cf6;
+    }
+
+    input[type="range"] {
+      width: 120px;
+      padding: 0;
+    }
+
+    /* Right panel - Editor */
+    .editor-panel {
+      width: 400px;
+      background: #16213e;
+      display: flex;
+      flex-direction: column;
+      border-left: 1px solid rgba(255,255,255,0.1);
+    }
+
+    .editor-header {
+      padding: 15px 20px;
+      background: #1a1a2e;
+      border-bottom: 1px solid rgba(255,255,255,0.1);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .editor-header h2 {
+      font-size: 1.1rem;
+      font-weight: 600;
+    }
+
+    .subtitle-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px;
+    }
+
+    .subtitle-item {
+      background: rgba(0,0,0,0.2);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 10px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .subtitle-item:hover {
+      border-color: rgba(139, 92, 246, 0.5);
+    }
+
+    .subtitle-item.active {
+      border-color: #8b5cf6;
+      background: rgba(139, 92, 246, 0.1);
+    }
+
+    .subtitle-time {
+      font-family: 'SF Mono', Monaco, monospace;
+      font-size: 0.75rem;
+      color: #8b5cf6;
+      margin-bottom: 6px;
+    }
+
+    .subtitle-text-edit {
+      width: 100%;
+      background: rgba(0,0,0,0.3);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 4px;
+      color: white;
+      padding: 8px;
+      font-size: 0.9rem;
+      resize: none;
+      font-family: inherit;
+    }
+
+    .subtitle-text-edit:focus {
+      outline: none;
+      border-color: #8b5cf6;
+    }
+
+    .subtitle-words {
+      margin-top: 8px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+
+    .word-chip {
+      font-size: 0.7rem;
+      background: rgba(139, 92, 246, 0.2);
+      padding: 2px 6px;
+      border-radius: 3px;
+      color: rgba(255,255,255,0.8);
+    }
+
+    .word-chip.highlight {
+      background: rgba(255, 255, 0, 0.3);
+      color: yellow;
+    }
+
+    /* Action buttons */
+    .action-bar {
+      padding: 15px 20px;
+      background: #1a1a2e;
+      border-top: 1px solid rgba(255,255,255,0.1);
+      display: flex;
+      gap: 10px;
+    }
+
+    .btn {
+      padding: 10px 20px;
+      border: none;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #8b5cf6, #6366f1);
+      color: white;
+      flex: 1;
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);
+    }
+
+    .btn-primary:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .btn-secondary {
+      background: rgba(255,255,255,0.1);
+      color: white;
+      border: 1px solid rgba(255,255,255,0.2);
+    }
+
+    .btn-secondary:hover {
+      background: rgba(255,255,255,0.15);
+    }
+
+    /* Status messages */
+    .status {
+      padding: 10px 20px;
+      background: rgba(139, 92, 246, 0.2);
+      color: #a78bfa;
+      font-size: 0.85rem;
+      text-align: center;
+    }
+
+    .status.success {
+      background: rgba(34, 197, 94, 0.2);
+      color: #4ade80;
+    }
+
+    .status.error {
+      background: rgba(239, 68, 68, 0.2);
+      color: #f87171;
+    }
+
+    /* Loading state */
+    .loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 40px;
+      color: rgba(255,255,255,0.6);
+    }
+
+    .spinner {
+      width: 24px;
+      height: 24px;
+      border: 3px solid rgba(255,255,255,0.2);
+      border-top-color: #8b5cf6;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Video Panel -->
+    <div class="video-panel">
+      <div class="video-wrapper">
+        <div class="video-container">
+          <video id="video" controls>
+            <source src="/video" type="video/mp4">
+          </video>
+          <div id="subtitle-overlay" class="subtitle-overlay bottom">
+            <div id="subtitle-text" class="subtitle-text" style="display: none;"></div>
+          </div>
+        </div>
+      </div>
+      
+      <div class="controls-bar">
+        <div class="settings-row">
+          <div class="setting-group">
+            <label>Font Size:</label>
+            <input type="range" id="font-size" min="24" max="96" value="48">
+            <span id="font-size-value">48px</span>
+          </div>
+          
+          <div class="setting-group">
+            <label>Position:</label>
+            <select id="position">
+              <option value="bottom">Bottom</option>
+              <option value="middle">Middle</option>
+              <option value="top">Top</option>
+            </select>
+          </div>
+          
+          <div class="setting-group">
+            <label>Font Color:</label>
+            <select id="font-color">
+              <option value="white">White</option>
+              <option value="yellow">Yellow</option>
+            </select>
+          </div>
+          
+          <div class="setting-group">
+            <label>Outline:</label>
+            <select id="outline-color">
+              <option value="black">Black</option>
+              <option value="none">None</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Editor Panel -->
+    <div class="editor-panel">
+      <div class="editor-header">
+        <h2>Subtitles</h2>
+        <span id="subtitle-count">0 segments</span>
+      </div>
+      
+      <div id="subtitle-list" class="subtitle-list">
+        <div class="loading">
+          <div class="spinner"></div>
+          <span>Loading transcription...</span>
+        </div>
+      </div>
+      
+      <div id="status" class="status" style="display: none;"></div>
+      
+      <div class="action-bar">
+        <button id="export-srt" class="btn btn-secondary">Export SRT</button>
+        <button id="approve-btn" class="btn btn-primary">Approve & Export Video</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // State
+    let subtitles = [];
+    let settings = {
+      font_size: 48,
+      position: 'bottom',
+      font_color: 'white',
+      outline_color: 'black',
+    };
+    let currentSubtitleIndex = -1;
+    let currentWordIndex = -1;
+
+    // DOM elements
+    const video = document.getElementById('video');
+    const subtitleOverlay = document.getElementById('subtitle-overlay');
+    const subtitleText = document.getElementById('subtitle-text');
+    const subtitleList = document.getElementById('subtitle-list');
+    const subtitleCount = document.getElementById('subtitle-count');
+    const fontSizeInput = document.getElementById('font-size');
+    const fontSizeValue = document.getElementById('font-size-value');
+    const positionSelect = document.getElementById('position');
+    const fontColorSelect = document.getElementById('font-color');
+    const outlineColorSelect = document.getElementById('outline-color');
+    const approveBtn = document.getElementById('approve-btn');
+    const exportSrtBtn = document.getElementById('export-srt');
+    const statusEl = document.getElementById('status');
+
+    // Load data from server
+    async function loadData() {
+      try {
+        const response = await fetch('/api/data');
+        const data = await response.json();
+        
+        subtitles = data.subtitles;
+        settings = data.settings;
+        
+        // Update UI
+        fontSizeInput.value = settings.font_size;
+        fontSizeValue.textContent = settings.font_size + 'px';
+        positionSelect.value = settings.position;
+        fontColorSelect.value = settings.font_color;
+        outlineColorSelect.value = settings.outline_color;
+        
+        renderSubtitleList();
+        updateSubtitleStyle();
+        
+        subtitleCount.textContent = `${subtitles.length} segments`;
+      } catch (error) {
+        console.error('Failed to load data:', error);
+        subtitleList.innerHTML = '<div class="status error">Failed to load transcription</div>';
+      }
+    }
+
+    // Render subtitle list
+    function renderSubtitleList() {
+      subtitleList.innerHTML = '';
+      
+      subtitles.forEach((sub, index) => {
+        const item = document.createElement('div');
+        item.className = 'subtitle-item' + (index === currentSubtitleIndex ? ' active' : '');
+        item.dataset.index = index;
+        
+        const formatTime = (t) => {
+          const m = Math.floor(t / 60);
+          const s = (t % 60).toFixed(2);
+          return `${m}:${s.padStart(5, '0')}`;
+        };
+        
+        item.innerHTML = `
+          <div class="subtitle-time">${formatTime(sub.start)} → ${formatTime(sub.end)}</div>
+          <textarea class="subtitle-text-edit" rows="2" data-index="${index}">${sub.text}</textarea>
+          <div class="subtitle-words" data-index="${index}">
+            ${(sub.words || []).map((w, i) => 
+              `<span class="word-chip" data-word-index="${i}">${w.word}</span>`
+            ).join('')}
+          </div>
+        `;
+        
+        // Click to seek
+        item.addEventListener('click', (e) => {
+          if (e.target.tagName !== 'TEXTAREA') {
+            video.currentTime = sub.start;
+            video.play();
+          }
+        });
+        
+        // Edit text
+        const textarea = item.querySelector('textarea');
+        textarea.addEventListener('input', (e) => {
+          subtitles[index].text = e.target.value;
+          // Note: editing text breaks word-level sync, but that's expected
+        });
+        
+        subtitleList.appendChild(item);
+      });
+    }
+
+    // Update subtitle display based on video time
+    function updateSubtitleDisplay() {
+      const time = video.currentTime;
+      
+      // Find current subtitle
+      let foundSub = null;
+      let foundIndex = -1;
+      
+      for (let i = 0; i < subtitles.length; i++) {
+        if (time >= subtitles[i].start && time <= subtitles[i].end) {
+          foundSub = subtitles[i];
+          foundIndex = i;
+          break;
+        }
+      }
+      
+      if (!foundSub) {
+        subtitleText.style.display = 'none';
+        currentSubtitleIndex = -1;
+        currentWordIndex = -1;
+        updateActiveSubtitleInList(-1);
+        return;
+      }
+      
+      subtitleText.style.display = 'block';
+      
+      // Update active subtitle in list
+      if (foundIndex !== currentSubtitleIndex) {
+        currentSubtitleIndex = foundIndex;
+        updateActiveSubtitleInList(foundIndex);
+        
+        // Scroll into view
+        const activeItem = subtitleList.querySelector(`[data-index="${foundIndex}"]`);
+        if (activeItem) {
+          activeItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+      }
+      
+      // Render with word highlighting
+      const words = foundSub.words || [];
+      if (words.length === 0) {
+        // No word timing - just show text
+        subtitleText.textContent = foundSub.text;
+        return;
+      }
+      
+      // Find current word
+      let activeWordIndex = -1;
+      for (let i = 0; i < words.length; i++) {
+        if (time >= words[i].start && time <= words[i].end) {
+          activeWordIndex = i;
+          break;
+        }
+        // If between words, highlight the previous one briefly
+        if (i > 0 && time > words[i-1].end && time < words[i].start) {
+          activeWordIndex = i - 1;
+          break;
+        }
+      }
+      
+      // If past all words but still in subtitle, highlight last word
+      if (activeWordIndex === -1 && time > words[words.length - 1].end) {
+        activeWordIndex = words.length - 1;
+      }
+      
+      // Build HTML with word highlighting
+      let html = words.map((w, i) => {
+        const isActive = i === activeWordIndex;
+        return `<span class="word${isActive ? ' highlight' : ''}">${w.word}</span>`;
+      }).join(' ');
+      
+      subtitleText.innerHTML = html;
+      
+      // Update word chips in list
+      if (activeWordIndex !== currentWordIndex) {
+        currentWordIndex = activeWordIndex;
+        updateWordHighlightInList(foundIndex, activeWordIndex);
+      }
+    }
+
+    // Update active subtitle in list
+    function updateActiveSubtitleInList(index) {
+      document.querySelectorAll('.subtitle-item').forEach((item, i) => {
+        item.classList.toggle('active', i === index);
+      });
+    }
+
+    // Update word highlight in list
+    function updateWordHighlightInList(subIndex, wordIndex) {
+      const wordsContainer = subtitleList.querySelector(`.subtitle-words[data-index="${subIndex}"]`);
+      if (!wordsContainer) return;
+      
+      wordsContainer.querySelectorAll('.word-chip').forEach((chip, i) => {
+        chip.classList.toggle('highlight', i === wordIndex);
+      });
+    }
+
+    // Update subtitle styling
+    function updateSubtitleStyle() {
+      subtitleText.style.fontSize = settings.font_size + 'px';
+      subtitleText.style.color = settings.font_color;
+      
+      // Position
+      subtitleOverlay.className = 'subtitle-overlay ' + settings.position;
+      
+      // Outline
+      if (settings.outline_color === 'none') {
+        subtitleText.style.textShadow = 'none';
+      } else {
+        subtitleText.style.textShadow = `2px 2px 2px ${settings.outline_color}, -2px -2px 2px ${settings.outline_color}, 2px -2px 2px ${settings.outline_color}, -2px 2px 2px ${settings.outline_color}`;
+      }
+    }
+
+    // Settings change handlers
+    fontSizeInput.addEventListener('input', () => {
+      settings.font_size = parseInt(fontSizeInput.value);
+      fontSizeValue.textContent = settings.font_size + 'px';
+      updateSubtitleStyle();
+    });
+
+    positionSelect.addEventListener('change', () => {
+      settings.position = positionSelect.value;
+      updateSubtitleStyle();
+    });
+
+    fontColorSelect.addEventListener('change', () => {
+      settings.font_color = fontColorSelect.value;
+      updateSubtitleStyle();
+    });
+
+    outlineColorSelect.addEventListener('change', () => {
+      settings.outline_color = outlineColorSelect.value;
+      updateSubtitleStyle();
+    });
+
+    // Video time update
+    video.addEventListener('timeupdate', updateSubtitleDisplay);
+
+    // Export SRT
+    exportSrtBtn.addEventListener('click', () => {
+      window.location.href = '/api/export-srt';
+    });
+
+    // Approve and export
+    approveBtn.addEventListener('click', async () => {
+      approveBtn.disabled = true;
+      approveBtn.textContent = 'Exporting...';
+      showStatus('Burning subtitles into video...', 'info');
+      
+      try {
+        const response = await fetch('/api/approve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ subtitles, settings }),
+        });
+        
+        const result = await response.json();
+        
+        if (result.status === 'ok') {
+          showStatus(`Video saved to: ${result.output}`, 'success');
+          approveBtn.textContent = 'Done!';
+        } else {
+          throw new Error(result.message || 'Export failed');
+        }
+      } catch (error) {
+        showStatus('Export failed: ' + error.message, 'error');
+        approveBtn.disabled = false;
+        approveBtn.textContent = 'Approve & Export Video';
+      }
+    });
+
+    // Show status message
+    function showStatus(message, type = 'info') {
+      statusEl.textContent = message;
+      statusEl.className = 'status ' + type;
+      statusEl.style.display = 'block';
+    }
+
+    // Initialize
+    loadData();
+  </script>
+</body>
+</html>
