@@ -179,13 +179,29 @@ def render_subtitle_image(
         total_width += w
     total_width += space_width * (len(word_list) - 1)
     
-    # Box dimensions based on FULL sentence
+    # Calculate visible width for box sizing (box grows with visible words)
+    visible_width = 0
+    first_visible_idx = -1
+    last_visible_idx = -1
+    for i, word_info in enumerate(word_list):
+        if word_info['visible']:
+            if first_visible_idx == -1:
+                first_visible_idx = i
+            last_visible_idx = i
+    
+    # Calculate width from first to last visible word
+    for i in range(first_visible_idx, last_visible_idx + 1):
+        visible_width += word_measurements[i]
+        if i < last_visible_idx:
+            visible_width += space_width
+    
+    # Box dimensions based on VISIBLE words only
     padding_x = 28
     padding_y = 18
-    box_width = total_width + padding_x * 2
+    box_width = visible_width + padding_x * 2
     box_height = int(font_size * 1.2) + padding_y * 2
     
-    # Position
+    # Position - center the FULL sentence, but box wraps VISIBLE words
     center_x = width // 2
     if position == 'bottom':
         center_y = height - 70
@@ -194,7 +210,14 @@ def render_subtitle_image(
     else:
         center_y = height // 2
     
-    box_x1 = center_x - box_width // 2
+    # Calculate where the first visible word starts
+    text_start_x = center_x - total_width // 2
+    first_visible_x = text_start_x
+    for i in range(first_visible_idx):
+        first_visible_x += word_measurements[i] + space_width
+    
+    # Box wraps the visible words
+    box_x1 = first_visible_x - padding_x
     box_y1 = center_y - box_height // 2
     box_x2 = box_x1 + box_width
     box_y2 = box_y1 + box_height
