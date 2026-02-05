@@ -309,7 +309,7 @@ def main():
         print(f"\r   Progress: 100% ({total_frames}/{total_frames})")
         
         # Composite with FFmpeg
-        print(f"\n🎬 Compositing with FFmpeg...")
+        print(f"\n🎬 Compositing with FFmpeg (showing live output)...\n")
         
         frames_pattern = os.path.join(temp_dir, 'frame_%06d.png')
         
@@ -338,12 +338,19 @@ def main():
             output_path
         ])
         
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        stdout, stderr = process.communicate()
+        print(f"   Command: {' '.join(cmd[:6])} ... {output_path}\n")
+        
+        # Run FFmpeg with live output
+        process = subprocess.Popen(cmd, stderr=subprocess.PIPE, universal_newlines=True)
+        
+        # Stream stderr (where FFmpeg shows progress)
+        for line in process.stderr:
+            print(f"   {line}", end='')
+        
+        process.wait()
         
         if process.returncode != 0:
-            print(f"\n❌ FFmpeg error:")
-            print(stderr.decode()[-1000:])
+            print(f"\n❌ FFmpeg failed with code {process.returncode}")
             sys.exit(1)
         
         print(f"\n✅ Output saved to: {output_path}")
