@@ -122,7 +122,17 @@ def render_subtitle_image(
     
     # Build word list with styles
     # Social media style: words appear as spoken, upcoming words are HIDDEN
-    if words:
+    # But we calculate positions based on ALL words so text doesn't shift
+    
+    if not words:
+        word_list = [{
+            'text': text,
+            'color': highlight_rgb + (255,),
+            'font': font_highlight,
+            'is_current': True,
+            'visible': True
+        }]
+    else:
         word_list = []
         for i, w in enumerate(words):
             if i == current_word_idx:
@@ -131,7 +141,8 @@ def render_subtitle_image(
                     'text': w['word'],
                     'color': highlight_rgb + (255,),
                     'font': font_highlight,
-                    'is_current': True
+                    'is_current': True,
+                    'visible': True
                 })
             elif i < current_word_idx:
                 # Spoken: full white (already said)
@@ -139,33 +150,36 @@ def render_subtitle_image(
                     'text': w['word'],
                     'color': text_rgb + (255,),
                     'font': font,
-                    'is_current': False
+                    'is_current': False,
+                    'visible': True
                 })
-            # Upcoming words: don't add them at all (hidden until spoken)
-    else:
-        word_list = [{
-            'text': text,
-            'color': highlight_rgb + (255,),
-            'font': font_highlight,
-            'is_current': True
-        }]
+            else:
+                # Upcoming: hidden but still takes up space for layout
+                word_list.append({
+                    'text': w['word'],
+                    'color': None,  # Won't be drawn
+                    'font': font,
+                    'is_current': False,
+                    'visible': False
+                })
     
-    # If no words to show yet, return transparent frame
-    if not word_list:
+    # Check if anything is visible
+    if not any(w['visible'] for w in word_list):
         return img
     
-    # Measure text for layout
+    # Measure ALL words for fixed layout (so positions don't shift)
     space_width = draw.textlength(' ', font=font)
     word_measurements = []
     total_width = 0
     
     for word_info in word_list:
-        w = draw.textlength(word_info['text'], font=word_info['font'])
+        # Use regular font for measurement to keep spacing consistent
+        w = draw.textlength(word_info['text'], font=font)
         word_measurements.append(w)
         total_width += w
     total_width += space_width * (len(word_list) - 1)
     
-    # Box dimensions with generous padding
+    # Box dimensions based on FULL sentence
     padding_x = 28
     padding_y = 18
     box_width = total_width + padding_x * 2
@@ -201,27 +215,30 @@ def render_subtitle_image(
     # Draw background box with rounded corners (semi-transparent)
     draw_rounded_rect(draw, (box_x1, box_y1, box_x2, box_y2), radius=10, fill=(0, 0, 0, 180))
     
-    # Draw words
+    # Draw words at fixed positions (only visible ones)
     x = center_x - total_width // 2
     baseline_y = center_y
     
     for i, word_info in enumerate(word_list):
         word_width = word_measurements[i]
         
-        # Adjust Y for larger highlighted text to keep baseline aligned
-        if word_info['is_current']:
-            y_offset = -int(font_size * 0.05)  # Slight lift for highlighted word
-        else:
-            y_offset = 0
+        # Only draw if visible
+        if word_info['visible']:
+            # Adjust Y for larger highlighted text to keep baseline aligned
+            if word_info['is_current']:
+                y_offset = -int(font_size * 0.05)  # Slight lift for highlighted word
+            else:
+                y_offset = 0
+            
+            # Draw the word
+            draw.text(
+                (x, baseline_y - font_size // 2 + y_offset),
+                word_info['text'],
+                font=word_info['font'],
+                fill=word_info['color']
+            )
         
-        # Draw the word
-        draw.text(
-            (x, baseline_y - font_size // 2 + y_offset),
-            word_info['text'],
-            font=word_info['font'],
-            fill=word_info['color']
-        )
-        
+        # Always advance x position (even for hidden words) to keep layout fixed
         x += word_width + space_width
     
     return img
