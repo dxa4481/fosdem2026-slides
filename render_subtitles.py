@@ -29,7 +29,8 @@ async def render_subtitle_frames(
     video_height: int,
     video_duration: float,
     fps: float,
-    output_dir: str
+    output_dir: str,
+    start_time: float = 0
 ):
     """Render subtitle frames using headless Chrome."""
     
@@ -118,12 +119,12 @@ async def render_subtitle_frames(
     await page.setContent(html_template)
     
     total_frames = int(video_duration * fps)
-    print(f"   Rendering {total_frames} frames at {fps} fps...")
+    print(f"   Rendering {total_frames} frames at {fps:.1f} fps...")
     
     last_pct = -1
     
     for frame_num in range(total_frames):
-        current_time = frame_num / fps
+        current_time = start_time + (frame_num / fps)
         
         # Find current subtitle
         current_sub = None
@@ -228,35 +229,47 @@ def get_video_info(video_path: str) -> dict:
     }
 
 
-def composite_with_ffmpeg(video_path: str, frames_dir: str, fps: float, output_path: str):
+def composite_with_ffmpeg(video_path: str, frames_dir: str, fps: float, output_path: str, start_time: float = 0, duration: float = None):
     """Composite subtitle frames onto video."""
-    print(f"\n   Compositing with FFmpeg...")
+    print(f"   Compositing with FFmpeg...")
     
     frames_pattern = os.path.join(frames_dir, 'frame_%06d.png')
     
-    cmd = [
-        'ffmpeg', '-y',
-        '-i', video_path,
-        '-framerate', str(fps),
-        '-i', frames_pattern,
-        '-filter_complex', '[0:v][1:v]overlay=0:0:format=rgb[out]',
+    # Build FFmpeg command
+    cmd = ['ffmpeg', '-y']
+    
+    # Input video with seek
+    if start_time > 0:
+        cmd.extend(['-ss', str(start_time)])
+    cmd.extend(['-i', video_path])
+    
+    # Duration limit
+    if duration:
+        cmd.extend(['-t', str(duration)])
+    
+    # PNG sequence input
+    cmd.extend(['-framerate', str(fps), '-i', frames_pattern])
+    
+    # Overlay filter - the PNGs have transparency
+    cmd.extend([
+        '-filter_complex', '[0:v][1:v]overlay=0:0:format=auto[out]',
         '-map', '[out]',
         '-map', '0:a?',
         '-c:v', 'libx264',
         '-preset', 'fast',
-        '-crf', '18',  # High quality
-        '-c:a', 'copy',
+        '-crf', '18',
+        '-c:a', 'aac',  # Re-encode audio to handle seeking
         '-shortest',
         output_path
-    ]
+    ])
     
-    print(f"   Running: ffmpeg ...")
+    print(f"   Running: ffmpeg (this may take a moment)...")
     
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     _, stderr = process.communicate()
     
     if process.returncode != 0:
-        print(f"   FFmpeg error: {stderr.decode()[-500:]}")
+        print(f"   FFmpeg error: {stderr.decode()[-1000:]}")
         return False
     
     return True
@@ -269,6 +282,9 @@ async def main():
     parser.add_argument('video', help='Input video file')
     parser.add_argument('subtitles', help='Subtitles JSON file')
     parser.add_argument('-o', '--output', help='Output video file')
+    parser.add_argument('--test', action='store_true', help='Quick test: render only 10 seconds starting where subtitles begin')
+    parser.add_argument('--start', type=float, default=None, help='Start time in seconds')
+    parser.add_argument('--duration', type=float, default=None, help='Duration in seconds')
     
     args = parser.parse_args()
     
@@ -290,44 +306,60 @@ async def main():
     subtitles = data['subtitles']
     settings = data.get('settings', {})
     
-    output_path = args.output or str(video_path.parent / f"{video_path.stem}_subtitled.mp4")
+    # Get video info
+    info = get_video_info(str(video_path))
+    
+    # Determine render range
+    if args.test:
+        # Find first subtitle and start there
+        first_sub_time = subtitles[0]['start'] if subtitles else 0
+        start_time = max(0, first_sub_time - 1)  # 1 second before first subtitle
+        duration = 10  # 10 seconds
+        output_path = args.output or str(video_path.parent / f"{video_path.stem}_TEST.mp4")
+        print(f"\n🧪 TEST MODE: Rendering only {duration}s starting at {start_time:.1f}s")
+    else:
+        start_time = args.start or 0
+        duration = args.duration or (info['duration'] - start_time)
+        output_path = args.output or str(video_path.parent / f"{video_path.stem}_subtitled.mp4")
     
     print(f"\n{'='*60}")
     print(f"  Puppeteer Subtitle Renderer")
     print(f"{'='*60}")
     print(f"\n📹 Video: {video_path.name}")
     print(f"📝 Subtitles: {len(subtitles)} segments")
-    
-    # Get video info
-    info = get_video_info(str(video_path))
     print(f"   Resolution: {info['width']}x{info['height']}")
     print(f"   FPS: {info['fps']:.2f}")
-    print(f"   Duration: {info['duration']:.1f}s")
+    print(f"   Render range: {start_time:.1f}s - {start_time + duration:.1f}s ({duration:.1f}s)")
     
     # Create temp directory for frames
     with tempfile.TemporaryDirectory() as temp_dir:
         print(f"\n🎨 Rendering subtitle frames with Chrome...")
         
-        await render_subtitle_frames(
+        frame_count = await render_subtitle_frames(
             subtitles=subtitles,
             settings=settings,
             video_width=info['width'],
             video_height=info['height'],
-            video_duration=info['duration'],
+            video_duration=duration,
             fps=info['fps'],
-            output_dir=temp_dir
+            output_dir=temp_dir,
+            start_time=start_time
         )
         
-        print(f"\n🎬 Compositing...")
+        print(f"\n🎬 Compositing {frame_count} frames...")
         success = composite_with_ffmpeg(
             str(video_path),
             temp_dir,
             info['fps'],
-            output_path
+            output_path,
+            start_time=start_time,
+            duration=duration
         )
         
         if success:
             print(f"\n✅ Output saved to: {output_path}")
+            if args.test:
+                print(f"\n👀 Check the test video! If it looks good, run without --test for full render.")
         else:
             print(f"\n❌ Failed to composite video")
             sys.exit(1)
