@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Video Subtitle Editor</title>
+  <!-- Montserrat font for presenter-mode style subtitles -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="dub.css">
+</head>
+<body>
+  <!-- Header -->
+  <header id="header">
+    <h1>Video Subtitle Editor</h1>
+    <a href="index.html" class="back-link">← Back to Presentation</a>
+  </header>
+
+  <!-- Main Container -->
+  <div id="main-container">
+    <!-- Left Panel: Video Preview -->
+    <div id="video-panel">
+      <div id="video-wrapper">
+        <!-- Upload Area (shown when no video) -->
+        <div id="upload-area">
+          <div class="upload-icon">🎬</div>
+          <h2>Drop a video here</h2>
+          <p>or click to browse</p>
+          <input type="file" id="video-input" accept="video/*" />
+        </div>
+        
+        <!-- Video Container (hidden until video loaded) -->
+        <div id="video-container" style="display: none;">
+          <video id="video-player" controls></video>
+          <!-- Subtitle Overlay - Presenter Mode Style -->
+          <div id="subtitle-overlay" class="subtitle-overlay">
+            <div id="subtitle-container" class="subtitle-container">
+              <div id="subtitle-text" class="subtitle-text"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Video Controls -->
+      <div id="video-controls" style="display: none;">
+        <button id="generate-btn" class="primary-btn">
+          <span class="btn-icon">✨</span> Generate Subtitles
+        </button>
+        <button id="chunked-btn" class="secondary-btn" title="Process 10 seconds at a time - works with any file size">
+          <span class="btn-icon">📝</span> Chunked Mode
+        </button>
+        <button id="clear-video-btn" class="secondary-btn">
+          <span class="btn-icon">🗑️</span> Clear Video
+        </button>
+      </div>
+    </div>
+
+    <!-- Right Panel: Subtitle Editor -->
+    <div id="editor-panel">
+      <div id="editor-header">
+        <h2>Subtitles</h2>
+        <span id="edit-indicator" class="edit-indicator" style="display: none;">Live Preview</span>
+        <div id="editor-actions">
+          <button id="add-subtitle-btn" class="icon-btn" title="Add Subtitle">
+            <span>➕</span>
+          </button>
+          <button id="import-srt-btn" class="icon-btn" title="Import SRT">
+            <span>📤</span>
+          </button>
+          <button id="export-srt-btn" class="icon-btn" title="Export SRT">
+            <span>📥</span>
+          </button>
+        </div>
+      </div>
+      
+      <!-- Status/Progress -->
+      <div id="status-bar" style="display: none;">
+        <div id="status-text">Ready</div>
+        <div id="progress-bar">
+          <div id="progress-fill"></div>
+        </div>
+      </div>
+      
+      <!-- Subtitle List -->
+      <div id="subtitle-list">
+        <div id="empty-state">
+          <p>No subtitles yet</p>
+          <p class="hint">Upload a video and click "Generate Subtitles" to auto-transcribe, or add subtitles manually.</p>
+        </div>
+      </div>
+      
+      <!-- Export Section -->
+      <div id="export-section" style="display: none;">
+        <h3>Export Video</h3>
+        <p class="export-note">Subtitles will be burned in using the same presenter-mode style shown in preview.</p>
+        <div class="export-options">
+          <div class="option-group">
+            <label for="font-size-select">Subtitle Size</label>
+            <select id="font-size-select">
+              <option value="small">Small (720p optimized)</option>
+              <option value="medium" selected>Medium (1080p optimized)</option>
+              <option value="large">Large (4K optimized)</option>
+              <option value="xlarge">Extra Large</option>
+            </select>
+          </div>
+        </div>
+        <button id="export-btn" class="export-btn">
+          <span class="btn-icon">💾</span> Export Video with Subtitles
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hidden file inputs -->
+  <input type="file" id="srt-input" accept=".srt,.vtt" style="display: none;" />
+
+  <!-- Loading Modal -->
+  <div id="loading-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content loading-modal">
+      <div class="spinner"></div>
+      <h3 id="loading-title">Processing...</h3>
+      <p id="loading-message">Please wait</p>
+      <div class="loading-progress">
+        <div id="loading-progress-fill" class="progress-fill"></div>
+      </div>
+      <span id="loading-percent">0%</span>
+    </div>
+  </div>
+
+  <!-- FFmpeg.wasm -->
+  <script src="lib/ffmpeg/ffmpeg.js"></script>
+  
+  <!-- Main App -->
+  <script src="dub.js" type="module"></script>
+</body>
+</html>
