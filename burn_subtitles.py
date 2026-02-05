@@ -121,7 +121,7 @@ def render_subtitle_image(
             current_word_idx = 0
     
     # Build word list with styles
-    # spoken = full white, current = yellow highlight, upcoming = very dim (almost invisible)
+    # Social media style: words appear as spoken, upcoming words are HIDDEN
     if words:
         word_list = []
         for i, w in enumerate(words):
@@ -134,21 +134,14 @@ def render_subtitle_image(
                     'is_current': True
                 })
             elif i < current_word_idx:
-                # Spoken: full white
+                # Spoken: full white (already said)
                 word_list.append({
                     'text': w['word'],
                     'color': text_rgb + (255,),
                     'font': font,
                     'is_current': False
                 })
-            else:
-                # Upcoming: very dim (40% opacity)
-                word_list.append({
-                    'text': w['word'],
-                    'color': text_rgb + (100,),  # Low alpha for upcoming
-                    'font': font,
-                    'is_current': False
-                })
+            # Upcoming words: don't add them at all (hidden until spoken)
     else:
         word_list = [{
             'text': text,
@@ -156,6 +149,10 @@ def render_subtitle_image(
             'font': font_highlight,
             'is_current': True
         }]
+    
+    # If no words to show yet, return transparent frame
+    if not word_list:
+        return img
     
     # Measure text for layout
     space_width = draw.textlength(' ', font=font)
