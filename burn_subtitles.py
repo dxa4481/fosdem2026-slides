@@ -315,17 +315,16 @@ def main():
         
         cmd = ['ffmpeg', '-y']
         
-        # Seek in input video
+        # Seek in input video (before -i for fast seek)
         if start_time > 0:
             cmd.extend(['-ss', str(start_time)])
         
         cmd.extend(['-i', str(video_path)])
-        cmd.extend(['-t', str(duration)])
         
         # PNG sequence
         cmd.extend(['-framerate', str(fps), '-i', frames_pattern])
         
-        # Overlay
+        # Overlay and OUTPUT duration limit
         cmd.extend([
             '-filter_complex', '[0:v][1:v]overlay=0:0:format=auto[out]',
             '-map', '[out]',
@@ -334,7 +333,7 @@ def main():
             '-preset', 'fast',
             '-crf', '18',
             '-c:a', 'aac',
-            '-shortest',
+            '-t', str(duration),  # Limit OUTPUT duration
             output_path
         ])
         
