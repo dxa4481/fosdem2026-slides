@@ -76,7 +76,7 @@ def render_subtitle_image(
     current_time: float,
     settings: dict
 ) -> Image.Image:
-    """Render a subtitle frame."""
+    """Render a subtitle frame matching browser CSS styling."""
     
     font_size = settings.get('font_size', 48)
     position = settings.get('position', 'bottom')
@@ -92,13 +92,14 @@ def render_subtitle_image(
         text_rgb = (255, 255, 255)
     
     highlight_rgb = hex_to_rgb(highlight_color)
-    dim_rgb = tuple(int(c * 0.5) for c in text_rgb)  # 50% brightness for upcoming
     
     # Create transparent image
     img = Image.new('RGBA', (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     
     font = get_font(font_size)
+    # Slightly larger font for highlighted word (scale effect)
+    font_highlight = get_font(int(font_size * 1.1))
     
     # Find current word index
     current_word_idx = -1
@@ -120,41 +121,65 @@ def render_subtitle_image(
             current_word_idx = 0
     
     # Build word list with styles
+    # spoken = full white, current = yellow highlight, upcoming = very dim (almost invisible)
     if words:
         word_list = []
         for i, w in enumerate(words):
             if i == current_word_idx:
-                word_list.append((w['word'], highlight_rgb, True))  # highlighted
+                # Current word: highlight color, larger font
+                word_list.append({
+                    'text': w['word'],
+                    'color': highlight_rgb + (255,),
+                    'font': font_highlight,
+                    'is_current': True
+                })
             elif i < current_word_idx:
-                word_list.append((w['word'], text_rgb, False))  # spoken
+                # Spoken: full white
+                word_list.append({
+                    'text': w['word'],
+                    'color': text_rgb + (255,),
+                    'font': font,
+                    'is_current': False
+                })
             else:
-                word_list.append((w['word'], dim_rgb, False))  # upcoming
+                # Upcoming: very dim (40% opacity)
+                word_list.append({
+                    'text': w['word'],
+                    'color': text_rgb + (100,),  # Low alpha for upcoming
+                    'font': font,
+                    'is_current': False
+                })
     else:
-        word_list = [(text, highlight_rgb, True)]
+        word_list = [{
+            'text': text,
+            'color': highlight_rgb + (255,),
+            'font': font_highlight,
+            'is_current': True
+        }]
     
-    # Measure text
+    # Measure text for layout
     space_width = draw.textlength(' ', font=font)
-    word_widths = []
+    word_measurements = []
     total_width = 0
     
-    for word, _, _ in word_list:
-        w = draw.textlength(word, font=font)
-        word_widths.append(w)
+    for word_info in word_list:
+        w = draw.textlength(word_info['text'], font=word_info['font'])
+        word_measurements.append(w)
         total_width += w
-    total_width += space_width * (len(word_list) - 1)  # spaces between words
+    total_width += space_width * (len(word_list) - 1)
     
-    # Box dimensions
-    padding_x = 24
-    padding_y = 16
+    # Box dimensions with generous padding
+    padding_x = 28
+    padding_y = 18
     box_width = total_width + padding_x * 2
-    box_height = font_size + padding_y * 2
+    box_height = int(font_size * 1.2) + padding_y * 2
     
     # Position
     center_x = width // 2
     if position == 'bottom':
-        center_y = height - 80
+        center_y = height - 70
     elif position == 'top':
-        center_y = 80
+        center_y = 70
     else:
         center_y = height // 2
     
@@ -163,17 +188,44 @@ def render_subtitle_image(
     box_x2 = box_x1 + box_width
     box_y2 = box_y1 + box_height
     
-    # Draw background box
-    draw_rounded_rect(draw, (box_x1, box_y1, box_x2, box_y2), radius=8, fill=(0, 0, 0, 200))
+    # Draw gradient background at bottom (like CSS linear-gradient)
+    if position == 'bottom':
+        gradient_height = 150
+        for i in range(gradient_height):
+            alpha = int(180 * (i / gradient_height))  # Fade from transparent to dark
+            y_pos = height - gradient_height + i
+            draw.line([(0, y_pos), (width, y_pos)], fill=(0, 0, 0, alpha))
+    elif position == 'top':
+        gradient_height = 150
+        for i in range(gradient_height):
+            alpha = int(180 * (1 - i / gradient_height))  # Fade from dark to transparent
+            draw.line([(0, i), (width, i)], fill=(0, 0, 0, alpha))
+    
+    # Draw background box with rounded corners (semi-transparent)
+    draw_rounded_rect(draw, (box_x1, box_y1, box_x2, box_y2), radius=10, fill=(0, 0, 0, 180))
     
     # Draw words
     x = center_x - total_width // 2
-    y = center_y - font_size // 2
+    baseline_y = center_y
     
-    for i, (word, color, is_highlight) in enumerate(word_list):
-        # Draw text
-        draw.text((x, y), word, font=font, fill=color + (255,))
-        x += word_widths[i] + space_width
+    for i, word_info in enumerate(word_list):
+        word_width = word_measurements[i]
+        
+        # Adjust Y for larger highlighted text to keep baseline aligned
+        if word_info['is_current']:
+            y_offset = -int(font_size * 0.05)  # Slight lift for highlighted word
+        else:
+            y_offset = 0
+        
+        # Draw the word
+        draw.text(
+            (x, baseline_y - font_size // 2 + y_offset),
+            word_info['text'],
+            font=word_info['font'],
+            fill=word_info['color']
+        )
+        
+        x += word_width + space_width
     
     return img
 
